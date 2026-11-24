@@ -46,6 +46,8 @@ const schema = z
     // Человекочитаемые логи для локальной разработки. pino-pretty — dev-зависимость
     LOG_PRETTY: flag,
     DATABASE_URL: z.url({ protocol: /^postgres(ql)?$/ }),
+    // http-адрес назначения: только для локальной разработки, ключ Dokploy по открытому каналу не уходит
+    DESTINATIONS_ALLOW_HTTP: flag,
     SECRETS_MASTER_KEY: masterKey,
     // Номер ключа в конвертах: при ротации новый ключ получает новый номер (см. shared/crypto)
     SECRETS_MASTER_KEY_ID: z
