@@ -6,6 +6,10 @@ import { type Kysely, sql } from 'kysely'
  * Прежний индекс включал `base_url` и ловил разные написания одного адреса, но не псевдонимы: IP вместо
  * имени, второе DNS-имя, другой прокси перед тем же Dokploy. `environmentId` в Dokploy — случайный
  * идентификатор инстанса, поэтому он сам по себе определяет окружение, как бы к нему ни обращались.
+ *
+ * Если в базе уже есть одно окружение под разными адресами, создание индекса упадёт, транзакция откатится
+ * и прежний индекс останется. Найти дубли: `SELECT environment_id, server_id, count(*) FROM destination
+ * GROUP BY 1, 2 HAVING count(*) > 1`; лишние назначения выключить и переименовать вручную, затем повторить.
  */
 export async function up(db: Kysely<unknown>): Promise<void> {
   await sql`DROP INDEX destination_target_uq`.execute(db)

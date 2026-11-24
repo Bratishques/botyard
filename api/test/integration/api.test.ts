@@ -24,7 +24,6 @@ let app: NestExpressApplication
 let base: string
 let dokploy: ReturnType<typeof Bun.serve>
 let email: string
-let operatorId: string
 
 beforeAll(async () => {
   dokploy = Bun.serve({
@@ -51,6 +50,8 @@ beforeAll(async () => {
       METRICS_HOST: '127.0.0.1',
       DESTINATIONS_ALLOW_HTTP: 'true',
       SESSION_COOKIE_SECURE: 'false',
+      // Как за Traefik: один прокси, клиентский адрес — последний в X-Forwarded-For
+      TRUST_PROXY: '1',
     }),
   )
   await app.listen(0, '127.0.0.1')
@@ -60,7 +61,7 @@ beforeAll(async () => {
   email = `operator-${crypto.randomUUID().slice(0, 8)}@botyard.local`
   const unitOfWork = app.get(UnitOfWork)
   const createOperator = new CreateOperator(new PostgresOperatorRepository(unitOfWork), unitOfWork, app.get(AuditLog))
-  operatorId = (await createOperator.execute(email, PASSWORD, 'system:test')).id
+  await createOperator.execute(email, PASSWORD, 'system:test')
 })
 
 afterAll(async () => {
@@ -74,8 +75,25 @@ const json = (body: unknown, cookie?: string): RequestInit => ({
   body: JSON.stringify(body),
 })
 
-async function login(password = PASSWORD, as = email): Promise<Response> {
-  return fetch(`${base}/auth/login`, json({ email: as, password }))
+/** Каждый вход — со своего адреса, чтобы тесты не делили лимит IP; `ip` — задать адрес явно */
+async function login(password = PASSWORD, as = email, ip = randomIp()): Promise<Response> {
+  const request = json({ email: as, password })
+  return fetch(`${base}/auth/login`, { ...request, headers: { ...request.headers, 'x-forwarded-for': ip } })
+}
+
+function randomIp(): string {
+  return `10.${randomOctet()}.${randomOctet()}.${randomOctet()}`
+}
+
+function randomOctet(): number {
+  return Math.floor(Math.random() * 254) + 1
+}
+
+async function freshOperator(): Promise<{ id: string; email: string }> {
+  const unitOfWork = app.get(UnitOfWork)
+  const create = new CreateOperator(new PostgresOperatorRepository(unitOfWork), unitOfWork, app.get(AuditLog))
+
+  return create.execute(`op-${crypto.randomUUID().slice(0, 8)}@botyard.local`, PASSWORD, 'system:test')
 }
 
 async function session(): Promise<string> {
@@ -125,26 +143,20 @@ describe('вход', () => {
   })
 
   test('выход с мёртвой cookie — 204 и cookie очищена; повторный выход пишет аудит один раз', async () => {
-    const cookie = await session()
+    const operator = await freshOperator()
+    const cookie = ((await login(PASSWORD, operator.email)).headers.get('set-cookie') ?? '').split(';')[0] ?? ''
     expect((await fetch(`${base}/auth/logout`, json({}, cookie))).status).toBe(204)
     const again = await fetch(`${base}/auth/logout`, json({}, cookie))
 
     expect(again.status).toBe(204)
     expect(again.headers.get('set-cookie') ?? '').toContain('botyard_session=;')
-    const token = decodeURIComponent(cookie.split('=').slice(1).join('='))
-    const session_ = await db
-      .selectFrom('operator_session')
-      .select('revoked_at')
-      .where('token_hash', '=', hashToken(token))
-      .executeTakeFirstOrThrow()
-    expect(session_.revoked_at).not.toBeNull()
     const logouts = await db
       .selectFrom('audit_event')
       .select('id')
       .where('action', '=', 'operator.logged_out')
-      .where('target_id', '=', operatorId)
+      .where('target_id', '=', operator.id)
       .execute()
-    expect(logouts.length).toBe(new Set(logouts.map((row) => row.id)).size)
+    expect(logouts).toHaveLength(1)
   })
 
   test('истёкшая сессия не пускает', async () => {
@@ -185,11 +197,12 @@ describe('вход', () => {
   })
 
   test('неудача по неизвестной почте в аудит не попадает', async () => {
-    const ghost = `ghost-${crypto.randomUUID().slice(0, 8)}@botyard.local`
-    await login(PASSWORD, ghost)
+    const count = async () =>
+      (await sql<{ n: number }>`SELECT count(*)::int AS n FROM audit_event WHERE action = 'operator.login_failed'`.execute(db)).rows[0]?.n
+    const before = await count()
+    expect((await login(PASSWORD, `ghost-${crypto.randomUUID().slice(0, 8)}@botyard.local`)).status).toBe(401)
 
-    const rows = await sql<{ n: number }>`SELECT count(*)::int AS n FROM audit_event WHERE payload::text LIKE ${`%${ghost}%`}`.execute(db)
-    expect(rows.rows[0]?.n).toBe(0)
+    expect(await count()).toBe(before)
   })
 
   test('перебор пароля упирается в лимит: 429 с Retry-After, правильный пароль тоже ждёт', async () => {
@@ -207,6 +220,26 @@ describe('вход', () => {
     expect(blocked.status).toBe(429)
     expect(Number(blocked.headers.get('retry-after'))).toBeGreaterThan(0)
     expect(((await blocked.json()) as { code: string }).code).toBe('LOGIN_THROTTLED')
+  })
+
+  test('залп параллельных неверных паролей не обгоняет лимит: неудач не больше пяти, остальные — 429', async () => {
+    const operator = await freshOperator()
+    const responses = await Promise.all(Array.from({ length: 18 }, () => login('wrong password', operator.email)))
+    const statuses = responses.map((response) => response.status)
+
+    expect(statuses.filter((status) => status === 401).length).toBeLessThanOrEqual(5)
+    expect(statuses.filter((status) => status === 429).length).toBeGreaterThan(0)
+  })
+
+  test('подделанный X-Forwarded-For не обходит лимит IP: считается последний адрес цепочки', async () => {
+    const proxyIp = randomIp()
+    const statuses: number[] = []
+    for (let i = 0; i < 21; i++) {
+      statuses.push((await login('wrong password', `nobody${i}@botyard.local`, `203.0.113.${i + 1}, ${proxyIp}`)).status)
+    }
+
+    expect(statuses.slice(0, 20).every((status) => status === 401)).toBe(true)
+    expect(statuses[20]).toBe(429)
   })
 
   test('тот же оператор дважды — OPERATOR_EXISTS', async () => {

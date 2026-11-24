@@ -25,6 +25,8 @@ export async function createHttpApp(config: AppConfig): Promise<NestExpressAppli
   const app = await NestFactory.create<NestExpressApplication>(AppModule.forRoot(config), { bufferLogs: true })
   app.useLogger(app.get(Logger))
   app.disable('x-powered-by')
+  // IP клиента для лимита входов: за Traefik без этого у всех один адрес (см. TRUST_PROXY в config.ts)
+  app.set('trust proxy', config.TRUST_PROXY)
   app.useGlobalFilters(new HttpExceptionFilter())
   app.enableShutdownHooks()
 

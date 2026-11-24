@@ -23,6 +23,24 @@ const masterKey = z
   .refine((key) => key.length === 32, 'must decode to exactly 32 bytes')
   .transform((key) => new SecretValue(key))
 
+/**
+ * Доверие прокси для `request.ip` (express `trust proxy`): `false` — адрес соединения; число — сколько
+ * прокси перед api (Dokploy + Traefik — 1); список подсетей через запятую. `true` запрещён: с ним
+ * `X-Forwarded-For` подделывается, и лимит входов по IP обходится сменой заголовка.
+ */
+const trustProxy = z
+  .string()
+  .default('false')
+  .refine((value) => value !== 'true', 'must not be true: set the number of proxy hops or trusted subnets')
+  .transform((value): false | number | string[] => {
+    if (value === 'false') return false
+    if (/^\d{1,2}$/.test(value)) return Number(value)
+    return value
+      .split(',')
+      .map((part) => part.trim())
+      .filter(Boolean)
+  })
+
 const flag = z
   .enum(['true', 'false'])
   .default('false')
@@ -49,6 +67,7 @@ const schema = z
     // http-адрес назначения: только для локальной разработки, ключ Dokploy по открытому каналу не уходит
     DESTINATIONS_ALLOW_HTTP: flag,
     // Cookie сессии только по https. Выключается для локальной разработки по http
+    TRUST_PROXY: trustProxy,
     SESSION_COOKIE_SECURE: z
       .enum(['true', 'false'])
       .default('true')

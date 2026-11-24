@@ -59,16 +59,24 @@ export class AuthService {
     }
 
     const keys = [`email:${email}`, `ip:${ip}`]
-    const blockedFor = this.throttle.blockedFor(keys, Date.now())
+    // Резерв попытки до проверки пароля, одним синхронным шагом: залп не обгоняет лимит
+    const blockedFor = this.throttle.tryAcquire(keys, Date.now())
     if (blockedFor !== null) {
       loginFailures.inc({ reason: 'throttled' })
       throw new AuthError(AuthErrorCode.LOGIN_THROTTLED, 'too many failed sign-in attempts', blockedFor)
     }
 
-    const record = await this.operators.findByEmail(email)
-    const valid = await this.withHashSlot(() => Bun.password.verify(password, record?.passwordHash ?? DECOY_HASH))
+    let record: Awaited<ReturnType<OperatorRepository['findByEmail']>>
+    let valid: boolean
+    try {
+      record = await this.operators.findByEmail(email)
+      valid = await this.withHashSlot(() => Bun.password.verify(password, record?.passwordHash ?? DECOY_HASH))
+    } catch (error) {
+      // Перегрузка или сбой — не попытка угадать пароль: резерв снимается
+      this.throttle.forgive(keys)
+      throw error
+    }
     if (!record || !valid) {
-      this.throttle.recordFailure(keys, Date.now())
       loginFailures.inc({ reason: record ? 'wrong_password' : 'unknown_email' })
       // Аудит — только для существующего оператора: строки о выдуманных почтах в неудаляемом журнале не нужны
       if (record) {
@@ -83,6 +91,7 @@ export class AuthService {
       throw invalidCredentials()
     }
 
+    this.throttle.forgive(keys)
     this.throttle.reset([`email:${email}`])
     const token = randomBytes(32).toString('base64url')
     const expiresAt = new Date(Date.now() + this.config.SESSION_TTL_HOURS * 3_600_000)

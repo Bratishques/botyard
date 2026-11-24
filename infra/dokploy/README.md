@@ -74,3 +74,5 @@ curl -s -H "x-api-key: $DOKPLOY_API_KEY" "$DOKPLOY_URL/api/project.all" | jq '.[
 - Порт метрик (`METRICS_PORT`, по умолчанию 9464) отдаёт `/metrics` без авторизации: его не публиковать
   наружу, только во внутреннюю сеть к Prometheus.
 - Миграции запускаются отдельной командой `bun run migrate` до старта новой версии, а не каждой репликой.
+- За Traefik Dokploy api запускается с `TRUST_PROXY=1`: иначе лимит входов видит у всех клиентов адрес прокси.
+- Cookie сессии — `SESSION_COOKIE_SECURE=true` (по умолчанию): админка открывается только по https.

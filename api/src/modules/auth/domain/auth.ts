@@ -60,13 +60,15 @@ export interface SessionRepository {
 export const SESSION_REPOSITORY = Symbol('SESSION_REPOSITORY')
 
 /**
- * Ограничение неудачных входов. Ключи — почта и IP: перебор паролей одной почты и перебор почт с одного
- * адреса. Проверка — до хеширования пароля: заблокированная попытка не тратит argon2.
+ * Ограничение входов по почте и IP. Попытка резервируется до проверки пароля одним шагом (проверка и
+ * учёт вместе), иначе параллельный залп прошёл бы мимо лимита, пока первые запросы ждут argon2.
  */
 export interface LoginThrottle {
-  /** Пауза до следующей попытки, если хотя бы один ключ исчерпал лимит */
-  blockedFor(keys: readonly string[], now: number): number | null
-  recordFailure(keys: readonly string[], now: number): void
+  /** Зарезервировать попытку для всех ключей; если хоть один исчерпал лимит — пауза, и ничего не резервируется */
+  tryAcquire(keys: readonly string[], now: number): number | null
+  /** Снять резерв удачной попытки: счёт остаётся только неудачам */
+  forgive(keys: readonly string[]): void
+  /** Забыть ключи целиком: успешный вход обнуляет неудачи своей почты */
   reset(keys: readonly string[]): void
 }
 

@@ -11,7 +11,7 @@ import { loadConfig } from '../../src/shared/config/config'
 import { LocalKeyEncryptionKey } from '../../src/shared/crypto/key-encryption-key'
 import { SecretBox } from '../../src/shared/crypto/secret-box'
 import { UnitOfWork } from '../../src/shared/database/unit-of-work'
-import { DokployUnauthorizedError, DokployUnavailableError } from '../../src/shared/dokploy/dokploy.errors'
+import { DokployRateLimitedError, DokployUnauthorizedError, DokployUnavailableError } from '../../src/shared/dokploy/dokploy.errors'
 import { db } from './setup'
 
 /**
@@ -30,7 +30,7 @@ class FakeCatalog implements DokployCatalog {
     this.calls++
     if (this.gate) await this.gate
     if (this.down) throw new DokployUnavailableError('dokploy project.all: 503')
-    if (this.rateLimited) throw new DokployUnavailableError('dokploy project.all: 429 Rate limit exceeded', 86_345_000)
+    if (this.rateLimited) throw new DokployRateLimitedError('dokploy project.all: 429 Rate limit exceeded', 86_345_000)
     if (apiKey !== this.validKey) throw new DokployUnauthorizedError('dokploy project.all: 401 Unauthorized')
     return [...environments].map((environmentId) => ({
       projectId: this.projectOf.get(environmentId) ?? 'prj_1',
@@ -314,6 +314,27 @@ describe('проверка связи', () => {
 
     expect(stale).toBeNull()
     expect((await useCases.get(created.id)).status).toBe('ACTIVE')
+  })
+
+  test('проверка не пишет результат в выключенное назначение даже при той же версии', async () => {
+    const created = await useCases.create(input(), 'operator:1')
+    await db.updateTable('destination').set({ status: 'DISABLED' }).where('id', '=', created.id).execute()
+
+    const recorded = await new PostgresDestinationRepository(unitOfWork).recordCheck(created.id, created.version, {
+      status: 'ACTIVE',
+      error: null,
+      checkedAt: new Date(),
+    })
+    expect(recorded).toBeNull()
+  })
+
+  test('лимит ключа Dokploy при проверке — RATE_LIMITED с подсказкой', async () => {
+    const created = await useCases.create(input(), 'operator:1')
+    catalog.rateLimited = true
+
+    const checked = await useCases.check(created.id, 'operator:1')
+    expect(checked.status).toBe('UNREACHABLE')
+    expect(checked.lastError).toContain(DestinationErrorCode.RATE_LIMITED)
   })
 
   test('выключенное назначение проверка не включает', async () => {
