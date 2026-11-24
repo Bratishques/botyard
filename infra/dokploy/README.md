@@ -26,6 +26,11 @@ multipass shell dokploy   # и дальше команда установки в
 ## Подготовка для Botyard
 
 1. **API-ключ:** Settings → Profile → API/CLI Keys. Ключ даёт полный доступ к инстансу: хранить как секрет.
+   **Лимит запросов:** ключ, выпущенный без настроек лимита, на self-hosted Dokploy получает умолчание
+   better-auth — 10 запросов в сутки (проверено на v0.31.4: `429 {"message":"Rate limit exceeded"}`,
+   `Retry-After: 86345`). Botyard ходит в Dokploy постоянно, поэтому ключ выпускается без лимита или
+   с достаточным лимитом. Через API: tRPC `user.createApiKey` с `rateLimitEnabled: false`. Botyard
+   распознаёт исчерпанный лимит и показывает код `DESTINATION_RATE_LIMITED`.
 2. **Проект и окружение:** создать проект `botyard`, взять `environmentId` окружения (`GET /api/project.all`).
 3. **Удалённые серверы (по желанию):** Dokploy умеет разворачивать на подключённые по SSH серверы.
    Их `serverId` указывается в назначении Botyard.
@@ -58,10 +63,18 @@ curl -s -H "x-api-key: $DOKPLOY_API_KEY" "$DOKPLOY_URL/api/project.all" | jq '.[
 | `GET application.readLogs` | логи (`tail`, `since`, `search`) |
 | `POST notification.createCustom` | вебхук о деплоях |
 
-Схемы ответов в OpenAPI не описаны: их нужно записать с живого инстанса в контрактные фикстуры api.
+Схемы ответов в OpenAPI не описаны. Адаптер — `api/src/shared/dokploy`; фикстуры и происхождение каждой —
+`api/test/fixtures/dokploy/README.md`. На живом Dokploy v0.31.4 проверены: `project.all`, неверный ключ
+(`401 { "message": "Unauthorized" }`) и исчерпанный лимит ключа (`429 { "message": "Rate limit exceeded" }`,
+`Retry-After` в секундах). Успешный ответ — результат процедуры без обёртки. `server.all` с непустым списком
+сверен только с исходниками: в песочнице нет удалённых серверов.
 
 ## Развёртывание самого api
 
 - Порт метрик (`METRICS_PORT`, по умолчанию 9464) отдаёт `/metrics` без авторизации: его не публиковать
   наружу, только во внутреннюю сеть к Prometheus.
 - Миграции запускаются отдельной командой `bun run migrate` до старта новой версии, а не каждой репликой.
+- За Traefik Dokploy api запускается с `TRUST_PROXY=1`: иначе лимит входов видит у всех клиентов адрес прокси.
+  Порт api наружу не публикуется: при доверии по числу хопов прямое соединение в обход Traefik подделает
+  `X-Forwarded-For`. Надёжнее вместо `1` указать подсеть сети Traefik.
+- Cookie сессии — `SESSION_COOKIE_SECURE=true` (по умолчанию): админка открывается только по https.

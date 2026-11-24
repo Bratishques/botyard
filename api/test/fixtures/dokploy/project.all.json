@@ -1,0 +1,39 @@
+[
+  {
+    "projectId": "nGIz56JkJ_uLXpwATu1ap",
+    "name": "botyard",
+    "description": "fixtures",
+    "createdAt": "2026-11-24T13:26:27.380Z",
+    "organizationId": "cAybHEuIjjwNUzFiQ-T_2",
+    "env": "",
+    "environments": [
+      {
+        "name": "production",
+        "environmentId": "telHVx4zQCPKML__trC1I",
+        "isDefault": true,
+        "applications": [],
+        "mariadb": [],
+        "mongo": [],
+        "mysql": [],
+        "postgres": [],
+        "redis": [],
+        "compose": [],
+        "libsql": []
+      },
+      {
+        "name": "staging",
+        "environmentId": "s-pYunUJOTOz3qQOEkcG5",
+        "isDefault": false,
+        "applications": [],
+        "mariadb": [],
+        "mongo": [],
+        "mysql": [],
+        "postgres": [],
+        "redis": [],
+        "compose": [],
+        "libsql": []
+      }
+    ],
+    "projectTags": []
+  }
+]

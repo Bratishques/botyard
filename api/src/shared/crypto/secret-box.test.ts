@@ -139,6 +139,24 @@ describe('SecretBox', () => {
   })
 })
 
+describe('заголовок конверта', () => {
+  /** KEK-заглушка без своей защиты: обёртка — сам ключ данных, AAD игнорируется */
+  const transparent = (id: number) => ({
+    id,
+    wrap: async (dataKey: Uint8Array) => Buffer.from(dataKey),
+    unwrap: async (wrapped: Uint8Array) => Buffer.from(wrapped),
+  })
+
+  test('подмена номера ключа ловится AAD шифртекста, даже если KEK её не заметил', async () => {
+    const box = new SecretBox([transparent(1), transparent(2)])
+    const sealed = Buffer.from(await box.seal(secret, context))
+    expect(await box.open(sealed, context)).toBe(secret)
+
+    sealed[1] = 2
+    await expect(box.open(sealed, context)).rejects.toThrow('envelope cannot be opened')
+  })
+})
+
 describe('secretContext', () => {
   test('не даёт пустую или произвольную часть', () => {
     expect(() => secretContext('destination', '', 'api_key')).toThrow('invalid secret context part')

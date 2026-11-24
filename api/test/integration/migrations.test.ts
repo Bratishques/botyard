@@ -10,7 +10,7 @@ const destination = (overrides: Record<string, unknown> = {}) => ({
   api_key_sealed: new Uint8Array([1, 2, 3]),
   api_key_hint: '••••abcd',
   project_id: 'p1',
-  environment_id: 'e1',
+  environment_id: `e-${crypto.randomUUID().slice(0, 8)}`,
   server_id: null,
   ...overrides,
 })
@@ -67,10 +67,11 @@ describe('destination', () => {
   })
 
   test('одно окружение Dokploy не заводится дважды', async () => {
-    const base_url = 'https://twice.example.com'
-    await db.insertInto('destination').values(destination({ base_url })).execute()
+    const environment_id = `e-${crypto.randomUUID().slice(0, 8)}`
+    await db.insertInto('destination').values(destination({ environment_id })).execute()
 
-    expect(await pgCode(() => db.insertInto('destination').values(destination({ base_url })).execute())).toBe('23505')
+    // Тот же environmentId по другому адресу (псевдоним Dokploy) — тоже дубль
+    expect(await pgCode(() => db.insertInto('destination').values(destination({ environment_id })).execute())).toBe('23505')
   })
 
   test.each([

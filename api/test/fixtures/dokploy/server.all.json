@@ -1,0 +1,20 @@
+[
+  {
+    "serverId": "srv_1",
+    "name": "bots-eu-1",
+    "description": null,
+    "ipAddress": "203.0.113.10",
+    "port": 22,
+    "username": "root",
+    "appName": "srv-bots-eu-1",
+    "enableDockerCleanup": true,
+    "createdAt": "2026-11-24T10:00:00.000Z",
+    "organizationId": "org_1",
+    "serverStatus": "active",
+    "serverType": "deploy",
+    "command": "",
+    "sshKeyId": "ssh_1",
+    "metricsConfig": {},
+    "totalSum": 1
+  }
+]

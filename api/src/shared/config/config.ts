@@ -1,3 +1,4 @@
+import { isIP } from 'node:net'
 import { z } from 'zod'
 import { SecretValue } from './secret-value'
 
@@ -23,6 +24,40 @@ const masterKey = z
   .refine((key) => key.length === 32, 'must decode to exactly 32 bytes')
   .transform((key) => new SecretValue(key))
 
+/**
+ * Доверие прокси для `request.ip` (express `trust proxy`): `false` — адрес соединения; число — сколько
+ * прокси перед api (Dokploy + Traefik — 1); список подсетей через запятую. `true` запрещён: с ним
+ * `X-Forwarded-For` подделывается, и лимит входов по IP обходится сменой заголовка.
+ */
+const trustProxy = z
+  .string()
+  .default('false')
+  .refine(isTrustProxy, 'must be false, a hop count (1-9) or a list of IPs/subnets no wider than /8; never true')
+  .transform((value): false | number | string[] => {
+    if (value === 'false') return false
+    if (/^\d$/.test(value)) return Number(value)
+    return value.split(',').map((part) => part.trim())
+  })
+
+/**
+ * Значение, которое express понимает однозначно. Мусор proxy-addr читает как адрес (`100` → 0.0.0.100) и
+ * молча перестаёт доверять кому-либо; подсети шире /8 почти равны `true`. Всё это отвергается при старте.
+ */
+function isTrustProxy(value: string): boolean {
+  if (value === 'false') return true
+  if (/^[1-9]$/.test(value)) return true
+
+  return value.split(',').every((part) => {
+    const [address = '', prefix, ...rest] = part.trim().split('/')
+    const family = isIP(address)
+    if (family === 0 || rest.length > 0) return false
+    if (prefix === undefined) return true
+    if (!/^\d{1,3}$/.test(prefix)) return false
+    const bits = Number(prefix)
+    return bits >= 8 && bits <= (family === 4 ? 32 : 128)
+  })
+}
+
 const flag = z
   .enum(['true', 'false'])
   .default('false')
@@ -46,6 +81,20 @@ const schema = z
     // Человекочитаемые логи для локальной разработки. pino-pretty — dev-зависимость
     LOG_PRETTY: flag,
     DATABASE_URL: z.url({ protocol: /^postgres(ql)?$/ }),
+    // http-адрес назначения: только для локальной разработки, ключ Dokploy по открытому каналу не уходит
+    DESTINATIONS_ALLOW_HTTP: flag,
+    TRUST_PROXY: trustProxy,
+    // Cookie сессии только по https. Выключается для локальной разработки по http
+    SESSION_COOKIE_SECURE: z
+      .enum(['true', 'false'])
+      .default('true')
+      .transform((value) => value === 'true'),
+    SESSION_TTL_HOURS: z
+      .string()
+      .regex(/^\d{1,4}$/)
+      .transform(Number)
+      .pipe(z.number().min(1).max(720))
+      .default(12),
     SECRETS_MASTER_KEY: masterKey,
     // Номер ключа в конвертах: при ротации новый ключ получает новый номер (см. shared/crypto)
     SECRETS_MASTER_KEY_ID: z

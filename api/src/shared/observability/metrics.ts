@@ -1,5 +1,5 @@
 import { Inject, Injectable, type OnApplicationShutdown, type OnModuleInit } from '@nestjs/common'
-import { collectDefaultMetrics, Histogram, Registry } from 'prom-client'
+import { Counter, collectDefaultMetrics, Histogram, Registry } from 'prom-client'
 import { APP_CONFIG, type AppConfig } from '../config/config'
 
 export const registry = new Registry()
@@ -11,6 +11,17 @@ export const httpRequestDuration = new Histogram({
   help: 'Длительность HTTP-запросов к api',
   labelNames: ['method', 'route', 'status'] as const,
   buckets: [0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5],
+  registers: [registry],
+})
+
+/**
+ * Неудачные входы. Неудачи для несуществующих почт в аудит не пишутся (аноним раздувал бы неудаляемый
+ * журнал), поэтому видны только здесь. `reason`: `unknown_email`, `wrong_password`, `throttled`, `busy`.
+ */
+export const loginFailures = new Counter({
+  name: 'botyard_login_failures_total',
+  help: 'Неудачные попытки входа в админку',
+  labelNames: ['reason'] as const,
   registers: [registry],
 })
 

@@ -42,6 +42,15 @@ describe('http', () => {
     expect(await ready.json()).toEqual({ status: 'ok', checks: { postgres: 'ok' } })
   })
 
+  test('404 — в формате контракта и без пути из запроса', async () => {
+    const response = await fetch(`${base}/nope?token=QUERYSECRET`)
+    const text = await response.text()
+
+    expect(response.status).toBe(404)
+    expect(JSON.parse(text)).toEqual({ code: 'NOT_FOUND', message: 'route not found' })
+    expect(text).not.toContain('QUERYSECRET')
+  })
+
   test('не раскрывает фреймворк', async () => {
     const response = await fetch(`${base}/health/live`)
 
