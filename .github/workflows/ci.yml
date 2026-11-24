@@ -28,6 +28,18 @@ jobs:
           --health-cmd "pg_isready -U botyard"
           --health-interval 5s
           --health-retries 10
+      # Как в infra/docker-compose.dev.yml и api/.env.test
+      rabbitmq:
+        image: rabbitmq:4-alpine
+        env:
+          RABBITMQ_DEFAULT_USER: botyard
+          RABBITMQ_DEFAULT_PASS: botyard
+        ports:
+          - 55672:5672
+        options: >-
+          --health-cmd "rabbitmq-diagnostics -q ping"
+          --health-interval 10s
+          --health-retries 12
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2

@@ -82,6 +82,8 @@ const schema = z
     // Человекочитаемые логи для локальной разработки. pino-pretty — dev-зависимость
     LOG_PRETTY: flag,
     DATABASE_URL: z.url({ protocol: /^postgres(ql)?$/ }),
+    // Брокер нужен relay и воркеру; процесс http без него обходится
+    RABBITMQ_URL: z.url({ protocol: /^amqps?$/ }).optional(),
     // http-адрес назначения: только для локальной разработки, ключ Dokploy по открытому каналу не уходит
     DESTINATIONS_ALLOW_HTTP: flag,
     TRUST_PROXY: trustProxy,
