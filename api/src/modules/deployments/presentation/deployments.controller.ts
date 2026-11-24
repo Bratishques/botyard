@@ -6,6 +6,7 @@ import {
   Headers,
   HttpException,
   HttpStatus,
+  NotFoundException,
   Param,
   ParseUUIDPipe,
   Post,
@@ -14,13 +15,13 @@ import {
 import type { Response } from 'express'
 import { z } from 'zod'
 import { ZodBody } from '../../../shared/http/zod-body'
-import { IDEMPOTENCY_KEY, Idempotency, IdempotencyConflictError } from '../../../shared/idempotency/idempotency'
+import { IDEMPOTENCY_KEY, Idempotency, IdempotencyConflictError, IdempotencyErrorCode } from '../../../shared/idempotency/idempotency'
 import type { Operator } from '../../auth/domain/auth'
 import { CurrentOperator } from '../../auth/presentation/session.guard'
 import { DeploymentUseCases } from '../application/deployment-use-cases'
 import { type Deployment, DeploymentError, DeploymentErrorCode, type Operation, type OperationKind } from '../domain/deployment'
 
-const uuid = z.string().uuid()
+const uuid = z.uuid()
 const createSchema = z
   .object({
     customerId: uuid,
@@ -38,6 +39,7 @@ export interface DeploymentView {
   templateId: string
   templateVersion: string
   config: Record<string, unknown>
+  tradingMode: Deployment['tradingMode']
   appName: string
   status: Deployment['status']
   activeOperationId: string | null
@@ -67,6 +69,7 @@ function deploymentView(deployment: Deployment): DeploymentView {
     templateId: deployment.templateId,
     templateVersion: deployment.templateVersion,
     config: deployment.config,
+    tradingMode: deployment.tradingMode,
     appName: deployment.appName,
     status: deployment.status,
     activeOperationId: deployment.activeOperationId,
@@ -96,12 +99,10 @@ const STATUS: Record<DeploymentErrorCode, number> = {
   [DeploymentErrorCode.VERSION_CONFLICT]: HttpStatus.CONFLICT,
   [DeploymentErrorCode.OPERATION_IN_PROGRESS]: HttpStatus.CONFLICT,
   [DeploymentErrorCode.INVALID_STATE]: HttpStatus.CONFLICT,
-  [DeploymentErrorCode.IDEMPOTENCY_CONFLICT]: HttpStatus.CONFLICT,
   [DeploymentErrorCode.INVALID_CONFIG]: HttpStatus.UNPROCESSABLE_ENTITY,
   [DeploymentErrorCode.CUSTOMER_UNAVAILABLE]: HttpStatus.UNPROCESSABLE_ENTITY,
   [DeploymentErrorCode.DESTINATION_UNAVAILABLE]: HttpStatus.UNPROCESSABLE_ENTITY,
   [DeploymentErrorCode.TEMPLATE_UNAVAILABLE]: HttpStatus.UNPROCESSABLE_ENTITY,
-  [DeploymentErrorCode.IDEMPOTENCY_KEY_REQUIRED]: HttpStatus.BAD_REQUEST,
 }
 
 async function http<T>(work: Promise<T>): Promise<T> {
@@ -110,7 +111,7 @@ async function http<T>(work: Promise<T>): Promise<T> {
   } catch (error) {
     if (error instanceof DeploymentError) throw new HttpException({ code: error.code, message: error.message }, STATUS[error.code])
     if (error instanceof IdempotencyConflictError) {
-      throw new HttpException({ code: DeploymentErrorCode.IDEMPOTENCY_CONFLICT, message: error.message }, HttpStatus.CONFLICT)
+      throw new HttpException({ code: IdempotencyErrorCode.CONFLICT, message: error.message }, HttpStatus.CONFLICT)
     }
     throw error
   }
@@ -119,7 +120,7 @@ async function http<T>(work: Promise<T>): Promise<T> {
 function requireKey(key: string | undefined): string {
   if (!key || !IDEMPOTENCY_KEY.test(key)) {
     throw new BadRequestException({
-      code: DeploymentErrorCode.IDEMPOTENCY_KEY_REQUIRED,
+      code: IdempotencyErrorCode.KEY_REQUIRED,
       message: 'Idempotency-Key header (8-128 of A-Z, a-z, 0-9, -, _) is required',
     })
   }
@@ -132,6 +133,13 @@ const DEPLOYMENT_ID = new ParseUUIDPipe({
 })
 
 const actor = (operator: Operator) => `operator:${operator.id}`
+
+const ACTIONS: Readonly<Record<string, Exclude<OperationKind, 'PROVISION'>>> = Object.assign(Object.create(null), {
+  start: 'START',
+  stop: 'STOP',
+  redeploy: 'REDEPLOY',
+  delete: 'DELETE',
+})
 
 /**
  * Развёртывания. Изменяющие запросы требуют `Idempotency-Key`: двойной клик или повтор после обрыва
@@ -177,62 +185,23 @@ export class DeploymentsController {
     return result.response
   }
 
-  @Post(':id/start')
-  start(
+  /** `POST /deployments/:id/{start|stop|redeploy|delete}` */
+  @Post(':id/:action')
+  async operate(
     @Param('id', DEPLOYMENT_ID) id: string,
+    @Param('action') action: string,
     @Body(new ZodBody(versionSchema)) body: { version: number },
     @Headers('idempotency-key') key: string | undefined,
     @CurrentOperator() operator: Operator,
     @Res({ passthrough: true }) response: Response,
-  ) {
-    return this.operate(id, 'START', body.version, key, operator, response)
-  }
-
-  @Post(':id/stop')
-  stop(
-    @Param('id', DEPLOYMENT_ID) id: string,
-    @Body(new ZodBody(versionSchema)) body: { version: number },
-    @Headers('idempotency-key') key: string | undefined,
-    @CurrentOperator() operator: Operator,
-    @Res({ passthrough: true }) response: Response,
-  ) {
-    return this.operate(id, 'STOP', body.version, key, operator, response)
-  }
-
-  @Post(':id/redeploy')
-  redeploy(
-    @Param('id', DEPLOYMENT_ID) id: string,
-    @Body(new ZodBody(versionSchema)) body: { version: number },
-    @Headers('idempotency-key') key: string | undefined,
-    @CurrentOperator() operator: Operator,
-    @Res({ passthrough: true }) response: Response,
-  ) {
-    return this.operate(id, 'REDEPLOY', body.version, key, operator, response)
-  }
-
-  @Post(':id/delete')
-  delete(
-    @Param('id', DEPLOYMENT_ID) id: string,
-    @Body(new ZodBody(versionSchema)) body: { version: number },
-    @Headers('idempotency-key') key: string | undefined,
-    @CurrentOperator() operator: Operator,
-    @Res({ passthrough: true }) response: Response,
-  ) {
-    return this.operate(id, 'DELETE', body.version, key, operator, response)
-  }
-
-  private async operate(
-    id: string,
-    kind: Exclude<OperationKind, 'PROVISION'>,
-    version: number,
-    key: string | undefined,
-    operator: Operator,
-    response: Response,
   ): Promise<unknown> {
-    const scope = `${actor(operator)}:deployments.${id}.${kind.toLowerCase()}`
+    const kind = ACTIONS[action]
+    if (!kind) throw new NotFoundException({ code: 'NOT_FOUND', message: `unknown action ${action}` })
+    // Один scope на все операции развёртывания: тот же ключ для stop и start — 409, а не две операции
+    const scope = `${actor(operator)}:deployments.${id}.operate`
     const result = await http(
-      this.idempotency.run(scope, requireKey(key), { id, kind, version }, async () => {
-        const { deployment, operation } = await this.deployments.operate(id, kind, version, actor(operator))
+      this.idempotency.run(scope, requireKey(key), { id, kind, version: body.version }, async () => {
+        const { deployment, operation } = await this.deployments.operate(id, kind, body.version, actor(operator))
         return { statusCode: HttpStatus.ACCEPTED, response: { ...deploymentView(deployment), operation: operationView(operation) } }
       }),
     )

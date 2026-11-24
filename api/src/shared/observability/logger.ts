@@ -1,5 +1,6 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { Params } from 'nestjs-pino'
+import pino, { type Logger as PinoLogger } from 'pino'
 import type { AppConfig } from '../config/config'
 import { isSecretKey, pathOnly, REDACTED, redactDeep, redactString } from './redact'
 
@@ -38,17 +39,7 @@ export function loggerOptions(config: AppConfig): Params {
         // Текст сообщения тоже маскируется: Nest пишет в msg сообщение ошибки как есть
         msg: (message: unknown) => (typeof message === 'string' ? redactString(message) : message),
       },
-      formatters: {
-        log: (object: Record<string, unknown>) => {
-          const result: Record<string, unknown> = {}
-          for (const [key, value] of Object.entries(object)) {
-            if (SERIALIZED_KEYS.has(key)) result[key] = value
-            else result[key] = isSecretKey(key) && value !== undefined && value !== null ? REDACTED : redactDeep(value)
-          }
-
-          return result
-        },
-      },
+      formatters: { log: redactLogObject },
       // Пробы дёргаются каждые несколько секунд и забивают лог, но отказ пробы обязан быть виден
       customLogLevel: (request: IncomingMessage, response: ServerResponse, error?: Error) => {
         // Отказ пробы — уже warn от самой проверки; второй error со стеком на каждую пробу — шум
@@ -64,6 +55,32 @@ export function loggerOptions(config: AppConfig): Params {
       transport: config.LOG_PRETTY ? { target: 'pino-pretty', options: { singleLine: true } } : undefined,
     },
   }
+}
+
+function redactLogObject(object: Record<string, unknown>): Record<string, unknown> {
+  const result: Record<string, unknown> = {}
+  for (const [key, value] of Object.entries(object)) {
+    if (SERIALIZED_KEYS.has(key)) result[key] = value
+    else result[key] = isSecretKey(key) && value !== undefined && value !== null ? REDACTED : redactDeep(value)
+  }
+
+  return result
+}
+
+/** Логгер фоновых процессов (relay, воркер): тот же JSON pino и та же маскировка, что у http */
+export function createProcessLogger(config: Pick<AppConfig, 'LOG_LEVEL' | 'LOG_PRETTY'>, name: string): PinoLogger {
+  return pino({
+    name,
+    level: config.LOG_LEVEL,
+    serializers: { err: serializeError },
+    formatters: { log: redactLogObject },
+    hooks: {
+      logMethod(args, method) {
+        method.apply(this, args.map((arg) => (typeof arg === 'string' ? redactString(arg) : arg)) as Parameters<typeof method>)
+      },
+    },
+    transport: config.LOG_PRETTY ? { target: 'pino-pretty', options: { singleLine: true } } : undefined,
+  })
 }
 
 /**

@@ -1,8 +1,10 @@
 import { Inject, Injectable } from '@nestjs/common'
+import type { ValidateFunction } from 'ajv'
 import { AuditLog } from '../../../shared/audit/audit'
 import { configSchemaValidator } from '../../../shared/catalog/config-validator'
 import { UnitOfWork } from '../../../shared/database/unit-of-work'
 import { Outbox, OutboxTopic } from '../../../shared/outbox/outbox'
+import { modeOf } from '../../customers/domain/customer'
 import {
   appNameOf,
   DEPLOYMENT_REPOSITORY,
@@ -63,7 +65,7 @@ export class DeploymentUseCases {
         throw new DeploymentError(DeploymentErrorCode.TEMPLATE_UNAVAILABLE, 'template is missing or retired')
       }
 
-      const config = validateConfig(basis.template.configSchema, input.config)
+      const config = validateConfig(`${basis.template.id}@${basis.template.currentVersion}`, basis.template.configSchema, input.config)
       const id = Bun.randomUUIDv7()
       const operationId = Bun.randomUUIDv7()
 
@@ -75,6 +77,7 @@ export class DeploymentUseCases {
         templateId: basis.template.id,
         templateVersion: basis.template.currentVersion,
         config,
+        tradingMode: modeOf(basis.customer),
         appName: appNameOf(id),
         status: 'PROVISIONING',
         activeOperationId: operationId,
@@ -92,6 +95,7 @@ export class DeploymentUseCases {
           templateId: basis.template.id,
           templateVersion: basis.template.currentVersion,
           appName: deployment.appName,
+          tradingMode: deployment.tradingMode,
           operationId,
         },
       })
@@ -100,7 +104,12 @@ export class DeploymentUseCases {
     })
   }
 
-  /** Операция над существующим развёртыванием: захват единственной активной операции условной записью */
+  /**
+   * Операция над существующим развёртыванием: захват единственной активной операции условной записью.
+   * Назначение проверяется после захвата, под FOR SHARE в той же транзакции: выключение, начатое раньше,
+   * будет дождано и увидено, а начатое позже дождётся этой транзакции. Запуск, принятый до выключения,
+   * воркер ещё раз сверит с назначением перед вызовом Dokploy (этап 2, шаг 3).
+   */
   operate(
     id: string,
     kind: Exclude<OperationKind, 'PROVISION'>,
@@ -113,6 +122,9 @@ export class DeploymentUseCases {
       const operationId = Bun.randomUUIDv7()
       const claimed = await this.repository.claim(id, version, operationId, rule.from, rule.claimAs)
       if (!claimed) throw await this.whyNotClaimed(id, version, rule.from)
+      if (rule.requiresActiveDestination && (await this.repository.lockDestinationStatus(claimed.destinationId)) === 'DISABLED') {
+        throw new DeploymentError(DeploymentErrorCode.DESTINATION_UNAVAILABLE, 'destination is disabled: only stop and delete are allowed')
+      }
 
       const operation = await this.repository.insertOperation({ id: operationId, deploymentId: id, kind, requestedBy: actor })
       await this.outbox.enqueue(OutboxTopic.OPERATION_STEP, { operationId, deploymentId: id, kind })
@@ -145,10 +157,17 @@ export class DeploymentUseCases {
   }
 }
 
+/** Скомпилированные схемы конфига по `шаблон@версия`: версия шаблона неизменяема, кеш не устаревает */
+const validators = new Map<string, ValidateFunction>()
+
 /** Конфиг по схеме шаблона: копия с подставленными `default`; ошибки — пути полей, без значений */
-function validateConfig(schema: Record<string, unknown>, input: Record<string, unknown>): Record<string, unknown> {
+function validateConfig(versionKey: string, schema: Record<string, unknown>, input: Record<string, unknown>): Record<string, unknown> {
   const config = structuredClone(input)
-  const validate = configSchemaValidator({ useDefaults: true }).compile(schema)
+  let validate = validators.get(versionKey)
+  if (!validate) {
+    validate = configSchemaValidator({ useDefaults: true }).compile(schema)
+    validators.set(versionKey, validate)
+  }
   if (!validate(config)) {
     const problems = (validate.errors ?? []).map((error) => `${error.instancePath || 'config'} ${error.message ?? 'is invalid'}`)
     throw new DeploymentError(DeploymentErrorCode.INVALID_CONFIG, problems.join('; '))

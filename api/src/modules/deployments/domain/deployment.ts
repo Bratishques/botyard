@@ -1,6 +1,8 @@
-import type { DeploymentStatus, OperationKind, OperationStatus } from '../../../shared/database/schema'
+import type { TradingMode } from '../../customers/domain/customer'
 
-export type { DeploymentStatus, OperationKind, OperationStatus }
+export type DeploymentStatus = 'PROVISIONING' | 'RUNNING' | 'STOPPED' | 'FAILED' | 'DELETING' | 'DELETED'
+export type OperationKind = 'PROVISION' | 'START' | 'STOP' | 'REDEPLOY' | 'DELETE'
+export type OperationStatus = 'PENDING' | 'RUNNING' | 'SUCCEEDED' | 'FAILED'
 
 /**
  * Развёртывание — робот конкретного клиента на конкретном назначении из конкретной версии шаблона.
@@ -11,10 +13,14 @@ export type { DeploymentStatus, OperationKind, OperationStatus }
  *                           │ отказ                 ▼            │
  *                           ▼                   STOPPED ─────────┘
  *                         FAILED ── redeploy ──► (операция) ──► RUNNING / FAILED
- *    любое, кроме DELETING и DELETED ── delete ──► DELETING ──► DELETED (терминально)
+ *    любое, кроме DELETED ── delete ──► DELETING ──► DELETED (терминально)
  *
  * Над развёртыванием идёт не больше одной операции: её захватывает условная запись
- * `active_operation_id IS NULL` вместе с проверкой допустимого статуса.
+ * `active_operation_id IS NULL` вместе с проверкой допустимого статуса. Удаление из DELETING без активной
+ * операции — повтор упавшего удаления.
+ *
+ * `tradingMode` — режим клиента на момент создания. Воркер подставляет токен только этого режима; смена
+ * режима клиента при живых развёртываниях запрещена (см. CustomerUseCases.goLive).
  */
 export interface Deployment {
   readonly id: string
@@ -23,6 +29,7 @@ export interface Deployment {
   readonly templateId: string
   readonly templateVersion: string
   readonly config: Record<string, unknown>
+  readonly tradingMode: TradingMode
   readonly appName: string
   readonly status: DeploymentStatus
   readonly dokployAppId: string | null
@@ -46,14 +53,23 @@ export interface Operation {
   readonly finishedAt: Date | null
 }
 
-/** Из каких статусов допустима операция и какой статус развёртывание получает при её захвате */
-export const OPERATION_RULES: Readonly<
-  Record<Exclude<OperationKind, 'PROVISION'>, { from: readonly DeploymentStatus[]; claimAs: DeploymentStatus | null }>
-> = {
-  START: { from: ['STOPPED'], claimAs: null },
-  STOP: { from: ['RUNNING'], claimAs: null },
-  REDEPLOY: { from: ['RUNNING', 'STOPPED', 'FAILED'], claimAs: null },
-  DELETE: { from: ['PROVISIONING', 'RUNNING', 'STOPPED', 'FAILED'], claimAs: 'DELETING' },
+export interface OperationRule {
+  /** Статусы, из которых операцию можно захватить */
+  readonly from: readonly DeploymentStatus[]
+  /** Статус, который развёртывание получает при захвате; `null` — прежний */
+  readonly claimAs: DeploymentStatus | null
+  /**
+   * Нужно ли включённое назначение. Выключенное назначение — «нового не принимаем»: запуск и передеплой
+   * запрещены, а остановить и удалить существующее можно всегда
+   */
+  readonly requiresActiveDestination: boolean
+}
+
+export const OPERATION_RULES: Readonly<Record<Exclude<OperationKind, 'PROVISION'>, OperationRule>> = {
+  START: { from: ['STOPPED'], claimAs: null, requiresActiveDestination: true },
+  STOP: { from: ['RUNNING'], claimAs: null, requiresActiveDestination: false },
+  REDEPLOY: { from: ['RUNNING', 'STOPPED', 'FAILED'], claimAs: null, requiresActiveDestination: true },
+  DELETE: { from: ['PROVISIONING', 'RUNNING', 'STOPPED', 'FAILED', 'DELETING'], claimAs: 'DELETING', requiresActiveDestination: false },
 }
 
 /**
@@ -74,8 +90,6 @@ export const DeploymentErrorCode = {
   CUSTOMER_UNAVAILABLE: 'DEPLOYMENT_CUSTOMER_UNAVAILABLE',
   DESTINATION_UNAVAILABLE: 'DEPLOYMENT_DESTINATION_UNAVAILABLE',
   TEMPLATE_UNAVAILABLE: 'DEPLOYMENT_TEMPLATE_UNAVAILABLE',
-  IDEMPOTENCY_KEY_REQUIRED: 'IDEMPOTENCY_KEY_REQUIRED',
-  IDEMPOTENCY_CONFLICT: 'IDEMPOTENCY_CONFLICT',
 } as const
 export type DeploymentErrorCode = (typeof DeploymentErrorCode)[keyof typeof DeploymentErrorCode]
 
@@ -92,7 +106,7 @@ export class DeploymentError extends Error {
 
 /** Основание для создания развёртывания, прочитанное под блокировкой в той же транзакции */
 export interface DeploymentBasis {
-  readonly customer: { readonly id: string; readonly status: string } | null
+  readonly customer: { readonly id: string; readonly status: string; readonly sandbox: boolean } | null
   readonly destination: { readonly id: string; readonly status: string } | null
   readonly template: {
     readonly id: string
@@ -103,7 +117,7 @@ export interface DeploymentBasis {
 }
 
 export interface DeploymentRepository {
-  /** Клиент, назначение и шаблон под `FOR SHARE`: архивация и выключение ждут конца создания */
+  /** Клиент, назначение и шаблон под `FOR SHARE`: архивация, смена режима и выключение ждут конца создания */
   lockBasis(customerId: string, destinationId: string, templateId: string): Promise<DeploymentBasis>
   insert(deployment: Omit<Deployment, 'version' | 'createdAt' | 'updatedAt' | 'dokployAppId' | 'lastError'>): Promise<Deployment>
   insertOperation(operation: { id: string; deploymentId: string; kind: OperationKind; requestedBy: string }): Promise<Operation>
@@ -121,6 +135,8 @@ export interface DeploymentRepository {
     from: readonly DeploymentStatus[],
     claimAs: DeploymentStatus | null,
   ): Promise<Deployment | null>
+  /** Статус назначения под `FOR SHARE`: выключение ждёт конца транзакции, а не проскакивает мимо */
+  lockDestinationStatus(destinationId: string): Promise<string | null>
 }
 
 export const DEPLOYMENT_REPOSITORY = Symbol('DEPLOYMENT_REPOSITORY')

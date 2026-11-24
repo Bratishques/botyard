@@ -1,8 +1,8 @@
 import { Injectable } from '@nestjs/common'
 import { type Selectable, sql } from 'kysely'
-import type { BotDeploymentTable, DeploymentStatus, OperationKind, OperationTable } from '../../../shared/database/schema'
+import type { BotDeploymentTable, OperationTable } from '../../../shared/database/schema'
 import { UnitOfWork } from '../../../shared/database/unit-of-work'
-import type { Deployment, DeploymentBasis, DeploymentRepository, Operation } from '../domain/deployment'
+import type { Deployment, DeploymentBasis, DeploymentRepository, DeploymentStatus, Operation, OperationKind } from '../domain/deployment'
 
 const DEPLOYMENT_COLUMNS = [
   'id',
@@ -11,6 +11,7 @@ const DEPLOYMENT_COLUMNS = [
   'template_id',
   'template_version',
   'config',
+  'trading_mode',
   'app_name',
   'status',
   'dokploy_app_id',
@@ -38,36 +39,66 @@ const OPERATION_COLUMNS = [
 export class PostgresDeploymentRepository implements DeploymentRepository {
   constructor(private readonly unitOfWork: UnitOfWork) {}
 
+  /**
+   * Запросы — по одному: в транзакции одно соединение, `Promise.all` здесь ничего не ускоряет, а порядок
+   * блокировок делает случайным. Шаблон блокируется отдельно от чтения манифеста: строка, дождавшаяся
+   * синхронизации каталога, перечитывается Postgres только сама, а соединение с версией осталось бы от
+   * старого снимка — и живой шаблон выглядел бы недоступным. Следующий запрос берёт свежий снимок.
+   */
   async lockBasis(customerId: string, destinationId: string, templateId: string): Promise<DeploymentBasis> {
     const db = this.unitOfWork.db()
-    const [customer, destination, template] = await Promise.all([
-      db.selectFrom('customer').select(['id', 'status']).where('id', '=', customerId).forShare().executeTakeFirst(),
-      db.selectFrom('destination').select(['id', 'status']).where('id', '=', destinationId).forShare().executeTakeFirst(),
-      db
-        .selectFrom('bot_template')
-        .innerJoin('bot_template_version', (join) =>
-          join
-            .onRef('bot_template_version.template_id', '=', 'bot_template.id')
-            .onRef('bot_template_version.version', '=', 'bot_template.current_version'),
-        )
-        .select(['bot_template.id', 'bot_template.current_version', 'bot_template.retired', 'bot_template_version.manifest'])
-        .where('bot_template.id', '=', templateId)
-        .forShare('bot_template')
-        .executeTakeFirst(),
-    ])
+    const customer = await db
+      .selectFrom('customer')
+      .select(['id', 'status', 'sandbox'])
+      .where('id', '=', customerId)
+      .forShare()
+      .executeTakeFirst()
+    const destination = await db
+      .selectFrom('destination')
+      .select(['id', 'status'])
+      .where('id', '=', destinationId)
+      .forShare()
+      .executeTakeFirst()
+    const template = await db
+      .selectFrom('bot_template')
+      .select(['id', 'current_version', 'retired'])
+      .where('id', '=', templateId)
+      .forShare()
+      .executeTakeFirst()
+    const version = template
+      ? await db
+          .selectFrom('bot_template_version')
+          .select('manifest')
+          .where('template_id', '=', template.id)
+          .where('version', '=', template.current_version)
+          .executeTakeFirstOrThrow()
+      : undefined
 
     return {
       customer: customer ?? null,
       destination: destination ?? null,
-      template: template
-        ? {
-            id: template.id,
-            currentVersion: template.current_version,
-            retired: template.retired,
-            configSchema: template.manifest.config.schema,
-          }
-        : null,
+      template:
+        template && version
+          ? {
+              id: template.id,
+              currentVersion: template.current_version,
+              retired: template.retired,
+              configSchema: version.manifest.config.schema,
+            }
+          : null,
     }
+  }
+
+  async lockDestinationStatus(destinationId: string): Promise<string | null> {
+    const row = await this.unitOfWork
+      .db()
+      .selectFrom('destination')
+      .select('status')
+      .where('id', '=', destinationId)
+      .forShare()
+      .executeTakeFirst()
+
+    return row?.status ?? null
   }
 
   async insert(deployment: Omit<Deployment, 'version' | 'createdAt' | 'updatedAt' | 'dokployAppId' | 'lastError'>): Promise<Deployment> {
@@ -81,6 +112,7 @@ export class PostgresDeploymentRepository implements DeploymentRepository {
         template_id: deployment.templateId,
         template_version: deployment.templateVersion,
         config: JSON.stringify(deployment.config),
+        trading_mode: deployment.tradingMode,
         app_name: deployment.appName,
         status: deployment.status,
         active_operation_id: deployment.activeOperationId,
@@ -161,6 +193,7 @@ function toDeployment(row: Selectable<BotDeploymentTable>): Deployment {
     templateId: row.template_id,
     templateVersion: row.template_version,
     config: row.config,
+    tradingMode: row.trading_mode,
     appName: row.app_name,
     status: row.status,
     dokployAppId: row.dokploy_app_id,

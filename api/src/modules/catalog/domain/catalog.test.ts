@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test'
-import { canonicalJson, type TemplateSource, templateVersion } from './catalog'
+import { canonicalJson } from '../../../shared/json/canonical-json'
+import { type TemplateSource, templateVersion } from './catalog'
 
 const source: TemplateSource = {
   manifest: {

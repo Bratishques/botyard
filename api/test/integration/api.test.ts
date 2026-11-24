@@ -5,8 +5,11 @@ import { createHttpApp } from '../../src/main'
 import { hashToken } from '../../src/modules/auth/application/auth.service'
 import { CreateOperator } from '../../src/modules/auth/application/create-operator'
 import { PostgresOperatorRepository } from '../../src/modules/auth/infrastructure/postgres-auth.repositories'
+import { SyncCatalog } from '../../src/modules/catalog/application/sync-catalog'
+import { FilesystemCatalogSource } from '../../src/modules/catalog/infrastructure/filesystem-catalog.source'
+import { PostgresCatalogRepository } from '../../src/modules/catalog/infrastructure/postgres-catalog.repository'
 import { AuditLog } from '../../src/shared/audit/audit'
-import { loadConfig } from '../../src/shared/config/config'
+import { loadCatalogConfig, loadConfig } from '../../src/shared/config/config'
 import { UnitOfWork } from '../../src/shared/database/unit-of-work'
 import projectsFixture from '../fixtures/dokploy/project.all.json'
 import unauthorizedFixture from '../fixtures/dokploy/unauthorized.json'
@@ -268,6 +271,89 @@ describe('развёртывания по HTTP', () => {
 
     expect(response.status).toBe(400)
     expect(((await response.json()) as { code: string }).code).toBe('IDEMPOTENCY_KEY_REQUIRED')
+  })
+
+  const withKey = (init: RequestInit, key: string): RequestInit => ({ ...init, headers: { ...init.headers, 'idempotency-key': key } })
+
+  async function deploymentBody(cookie: string) {
+    const unitOfWork = app.get(UnitOfWork)
+    const source = new FilesystemCatalogSource(loadCatalogConfig().BOTS_CATALOG_DIR)
+    await new SyncCatalog(source, new PostgresCatalogRepository(unitOfWork), unitOfWork, app.get(AuditLog)).execute('system:test')
+    const customer = await fetch(
+      `${base}/customers`,
+      json(
+        { name: `http-${crypto.randomUUID().slice(0, 8)}`, accountId: 'sandbox-account', token: 't.sandbox-token-0123456789abcdef' },
+        cookie,
+      ),
+    )
+    expect(customer.status).toBe(201)
+    const destinationId = Bun.randomUUIDv7()
+    await db
+      .insertInto('destination')
+      .values({
+        id: destinationId,
+        name: `http-dest-${destinationId.slice(-8)}`,
+        base_url: `https://dokploy-${destinationId.slice(-8)}.example.com`,
+        api_key_sealed: new Uint8Array([1]),
+        api_key_hint: '••••abcd',
+        project_id: 'prj',
+        environment_id: `env-${destinationId.slice(-12)}`,
+        server_id: null,
+      })
+      .execute()
+
+    return {
+      customerId: ((await customer.json()) as { id: string }).id,
+      destinationId,
+      templateId: 'bita',
+      config: { figi: ['BBG004730N88'] },
+    }
+  }
+
+  test('повтор создания с тем же ключом — 201 и тот же ответ, одно развёртывание; другое тело — 409', async () => {
+    const cookie = await session()
+    const body = await deploymentBody(cookie)
+    const key = `http-${crypto.randomUUID()}`
+
+    const first = await fetch(`${base}/deployments`, withKey(json(body, cookie), key))
+    const second = await fetch(`${base}/deployments`, withKey(json(body, cookie), key))
+    expect([first.status, second.status]).toEqual([201, 201])
+    const created = (await first.json()) as { id: string; tradingMode: string }
+    expect(await second.json()).toEqual(created)
+    expect(created.tradingMode).toBe('sandbox')
+    const rows = await db.selectFrom('bot_deployment').select('id').where('customer_id', '=', body.customerId).execute()
+    expect(rows).toHaveLength(1)
+
+    const other = await fetch(`${base}/deployments`, withKey(json({ ...body, config: { figi: ['OTHER'] } }, cookie), key))
+    expect(other.status).toBe(409)
+    expect(((await other.json()) as { code: string }).code).toBe('IDEMPOTENCY_CONFLICT')
+  })
+
+  test('операция — 202, повтор — 202 и та же операция; тот же ключ для другой операции — 409; неизвестное действие — 404', async () => {
+    const cookie = await session()
+    const created = (await (
+      await fetch(`${base}/deployments`, withKey(json(await deploymentBody(cookie), cookie), `c-${crypto.randomUUID()}`))
+    ).json()) as {
+      id: string
+    }
+    // Воркера ещё нет (этап 2, шаг 3): завершение provision — прямой записью
+    await db.updateTable('bot_deployment').set({ status: 'RUNNING', active_operation_id: null }).where('id', '=', created.id).execute()
+    const version = (await db.selectFrom('bot_deployment').select('version').where('id', '=', created.id).executeTakeFirstOrThrow()).version
+    const key = `op-${crypto.randomUUID()}`
+
+    const stop = await fetch(`${base}/deployments/${created.id}/stop`, withKey(json({ version }, cookie), key))
+    const again = await fetch(`${base}/deployments/${created.id}/stop`, withKey(json({ version }, cookie), key))
+    expect([stop.status, again.status]).toEqual([202, 202])
+    const first = (await stop.json()) as { operation: { id: string; kind: string } }
+    expect(first.operation.kind).toBe('STOP')
+    expect(((await again.json()) as { operation: { id: string } }).operation.id).toBe(first.operation.id)
+
+    const start = await fetch(`${base}/deployments/${created.id}/start`, withKey(json({ version }, cookie), key))
+    expect(start.status).toBe(409)
+    expect(((await start.json()) as { code: string }).code).toBe('IDEMPOTENCY_CONFLICT')
+
+    const unknown = await fetch(`${base}/deployments/${created.id}/explode`, withKey(json({ version }, cookie), `x-${crypto.randomUUID()}`))
+    expect(unknown.status).toBe(404)
   })
 })
 

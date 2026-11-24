@@ -5,6 +5,12 @@ import { canonicalJson } from '../json/canonical-json'
 
 export const IDEMPOTENCY_KEY = /^[A-Za-z0-9_-]{8,128}$/
 
+/** Коды ответа API про сам ключ, а не про действие */
+export const IdempotencyErrorCode = {
+  KEY_REQUIRED: 'IDEMPOTENCY_KEY_REQUIRED',
+  CONFLICT: 'IDEMPOTENCY_CONFLICT',
+} as const
+
 export class IdempotencyConflictError extends Error {
   override readonly name = 'IdempotencyConflictError'
 }
@@ -26,6 +32,10 @@ export interface IdempotentResult {
  * - повтор с тем же ключом, но другим телом — `IdempotencyConflictError` (409): это другой запрос.
  *
  * `scope` разделяет ключи операторов и действий: один ключ у двух операторов — два разных запроса.
+ *
+ * Сохраняется только успешный ответ: ошибка откатывает транзакцию вместе с ключом, и повтор с тем же
+ * ключом выполняется заново (например, 409 «идёт другая операция» после её завершения станет 202).
+ * Записи пока не удаляются: очистка по `created_at` — в docs/roadmap.md.
  */
 @Injectable()
 export class Idempotency {

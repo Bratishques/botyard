@@ -7,7 +7,16 @@ export type Db = Kysely<Database>
 
 export const DB = Symbol('DB')
 
-export function createDb(url: string, options: { max?: number } = {}): Db {
+export interface DbOptions {
+  max?: number
+  /**
+   * Postgres сам закроет сессию, простаивающую в открытой транзакции дольше этого: страховка процессов,
+   * которые держат транзакцию на сетевом вызове (relay — на подтверждении брокера)
+   */
+  idleInTransactionTimeoutMs?: number
+}
+
+export function createDb(url: string, options: DbOptions = {}): Db {
   return new Kysely<Database>({
     dialect: new PostgresDialect({
       pool: new pg.Pool({
@@ -16,6 +25,9 @@ export function createDb(url: string, options: { max?: number } = {}): Db {
         max: options.max ?? 10,
         idleTimeoutMillis: 30_000,
         connectionTimeoutMillis: 5_000,
+        ...(options.idleInTransactionTimeoutMs !== undefined && {
+          idle_in_transaction_session_timeout: options.idleInTransactionTimeoutMs,
+        }),
       }),
     }),
   })

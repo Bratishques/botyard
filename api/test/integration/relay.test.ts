@@ -2,9 +2,9 @@ import { afterAll, beforeAll, beforeEach, describe, expect, test } from 'bun:tes
 import { sql } from 'kysely'
 import { loadConfig } from '../../src/shared/config/config'
 import { UnitOfWork } from '../../src/shared/database/unit-of-work'
-import { type Broker, connectBroker, OPERATION_STEP_QUEUE } from '../../src/shared/messaging/rabbitmq'
+import { type Broker, BrokerLostError, connectBroker, OPERATION_STEP_QUEUE } from '../../src/shared/messaging/rabbitmq'
 import { Outbox, OutboxTopic } from '../../src/shared/outbox/outbox'
-import { OutboxRelay } from '../../src/shared/outbox/relay'
+import { OutboxRelay, ReturnedMessagesError } from '../../src/shared/outbox/relay'
 import { db } from './setup'
 
 /** Relay на настоящих Postgres и RabbitMQ (infra/docker-compose.dev.yml, в CI — сервисы) */
@@ -58,7 +58,7 @@ describe('outbox relay', () => {
     expect(unpublished).toHaveLength(0)
   })
 
-  test('два relay одновременно — каждое сообщение публикуется ровно один раз', async () => {
+  test('два relay одновременно — второй не ждёт первого (SKIP LOCKED), каждое сообщение ровно один раз', async () => {
     const ids = await enqueue(10)
     // Первый relay выбрал порцию и ждёт подтверждения брокера; второй стартует именно в это окно
     let selected: () => void = () => {}
@@ -66,20 +66,47 @@ describe('outbox relay', () => {
     const slowChannel = Object.create(broker.channel)
     slowChannel.waitForConfirms = async () => {
       selected()
-      await Bun.sleep(150)
+      await Bun.sleep(300)
       return broker.channel.waitForConfirms()
     }
-    const slow = new OutboxRelay(db, { channel: slowChannel, close: async () => {} })
+    const slow = new OutboxRelay(db, { ...broker, channel: slowChannel })
     const second = await connectBroker(url)
     const fast = new OutboxRelay(db, second)
 
-    const [slowCount, fastCount] = await Promise.all([slow.tick(), firstSelected.then(() => fast.tick())])
+    const finished: string[] = []
+    const [slowCount, fastCount] = await Promise.all([
+      slow.tick().then((count) => (finished.push('slow'), count)),
+      firstSelected.then(() => fast.tick()).then((count) => (finished.push('fast'), count)),
+    ])
     await second.close()
 
+    // С обычным FOR UPDATE второй ждал бы коммита первого и закончил бы после него
+    expect(finished).toEqual(['fast', 'slow'])
     expect(slowCount + fastCount).toBe(ids.length)
     const received = await drain()
     expect(received).toHaveLength(ids.length)
     expect(new Set(received.map((message) => message.messageId)).size).toBe(ids.length)
+  })
+
+  test('сообщение без очереди брокер возвращает — порция откатывается и не помечается', async () => {
+    await enqueue(1)
+    await db.insertInto('outbox_message').values({ id: Bun.randomUUIDv7(), topic: 'nobody.listens', payload: '{}' }).execute()
+
+    await expect(new OutboxRelay(db, broker).tick()).rejects.toBeInstanceOf(ReturnedMessagesError)
+    const unpublished = await db.selectFrom('outbox_message').select('id').where('published_at', 'is', null).execute()
+    expect(unpublished).toHaveLength(2)
+    await sql`DELETE FROM outbox_message`.execute(db)
+  })
+
+  test('соединение с брокером оборвалось — run() завершается BrokerLostError, а не крутится вечно', async () => {
+    const own = await connectBroker(url)
+    const relay = new OutboxRelay(db, own)
+    const running = relay.run()
+    // Закрытие соединения в обход close() — то же, что видит процесс при перезапуске RabbitMQ
+    await (own.channel as unknown as { connection: { close(): Promise<void> } }).connection.close()
+
+    await expect(running).rejects.toBeInstanceOf(BrokerLostError)
+    relay.stop()
   })
 
   test('брокер недоступен — сообщения остаются неопубликованными', async () => {

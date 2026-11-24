@@ -1,8 +1,7 @@
-import { Logger } from '@nestjs/common'
+import type { Logger } from 'pino'
 import { Counter } from 'prom-client'
 import type { Db } from '../database/database'
-import type { Broker } from '../messaging/rabbitmq'
-import { EXCHANGE } from '../messaging/rabbitmq'
+import { type Broker, BrokerLostError, EXCHANGE } from '../messaging/rabbitmq'
 import { registry } from '../observability/metrics'
 
 const relayed = new Counter({
@@ -13,6 +12,12 @@ const relayed = new Counter({
 
 const BATCH = 50
 const IDLE_MS = 500
+/** Сколько ждать подтверждения брокера, пока строки порции заблокированы транзакцией */
+export const CONFIRM_TIMEOUT_MS = 10_000
+
+export class ReturnedMessagesError extends Error {
+  override readonly name = 'ReturnedMessagesError'
+}
 
 /**
  * Relay outbox → RabbitMQ (`PROCESS_ROLE=relay`). Доставка «хотя бы один раз»:
@@ -21,18 +26,27 @@ const IDLE_MS = 500
  *                брокера → отметить published_at }
  *
  * - SKIP LOCKED: несколько relay не публикуют одно сообщение одновременно и не ждут друг друга;
- * - брокер недоступен — транзакция откатывается, сообщения останутся неопубликованными до следующего раза;
- * - брокер подтвердил, а коммит не прошёл (обрыв базы) — сообщение уйдёт повторно; получатель отсеивает
- *   повтор по `messageId` (= id сообщения outbox).
+ * - публикация `mandatory`: сообщение, которому нет очереди, брокер возвращает, и порция откатывается;
+ * - подтверждение ждём не дольше CONFIRM_TIMEOUT_MS, иначе откат: транзакция не висит на сетевом вызове;
+ * - брокер подтвердил, а коммит не прошёл (обрыв базы) — сообщение уйдёт повторно с тем же `messageId`
+ *   (= id сообщения outbox). Получатель обязан это переживать: воркер саги проверяет шаг операции
+ *   по базе и повтор уже сделанного шага ничего не меняет (этап 2, шаг 3);
+ * - соединение с брокером потеряно — `run()` завершается с `BrokerLostError`, процесс выходит с ошибкой,
+ *   оркестратор его перезапускает. Своего переподключения нет: меньше состояний, которые надо проверять.
  */
 export class OutboxRelay {
-  private readonly logger = new Logger(OutboxRelay.name)
   private stopping = false
+  private lostError: Error | null = null
 
   constructor(
     private readonly db: Db,
     private readonly broker: Broker,
-  ) {}
+    private readonly logger?: Pick<Logger, 'error'>,
+  ) {
+    void broker.lost.then((error) => {
+      this.lostError = error
+    })
+  }
 
   /** Одна порция; число опубликованных сообщений */
   async tick(): Promise<number> {
@@ -48,15 +62,27 @@ export class OutboxRelay {
         .execute()
       if (batch.length === 0) return 0
 
-      for (const message of batch) {
-        this.broker.channel.publish(EXCHANGE, message.topic, Buffer.from(JSON.stringify(message.payload)), {
-          persistent: true,
-          messageId: message.id,
-          contentType: 'application/json',
-          type: message.topic,
-        })
+      const returns = this.broker.trackReturns()
+      try {
+        for (const message of batch) {
+          this.broker.channel.publish(EXCHANGE, message.topic, Buffer.from(JSON.stringify(message.payload)), {
+            persistent: true,
+            mandatory: true,
+            messageId: message.id,
+            contentType: 'application/json',
+            type: message.topic,
+          })
+        }
+        await this.confirmed()
+      } finally {
+        returns.stop()
       }
-      await this.broker.channel.waitForConfirms()
+      // basic.return приходит раньше basic.ack, поэтому после подтверждения список возвратов полон
+      if (returns.returned.size > 0) {
+        throw new ReturnedMessagesError(
+          `broker returned ${returns.returned.size} unroutable message(s): ${[...returns.returned].join(', ')}`,
+        )
+      }
 
       await trx
         .updateTable('outbox_message')
@@ -73,19 +99,41 @@ export class OutboxRelay {
     })
   }
 
-  /** Цикл до `stop()`: пустая порция — пауза, ошибка — лог и пауза, без выхода из цикла */
+  /**
+   * Цикл до `stop()`: пустая порция — пауза, ошибка — лог и пауза. Потеря брокера — выход с ошибкой:
+   * дальше крутиться бессмысленно, канал уже не оживёт.
+   */
   async run(): Promise<void> {
     while (!this.stopping) {
+      if (this.lostError) throw this.lostError
       try {
-        if ((await this.tick()) === 0) await Bun.sleep(IDLE_MS)
+        if ((await this.tick()) === 0) await this.pause(IDLE_MS)
       } catch (error) {
-        this.logger.error({ err: error }, 'outbox relay tick failed')
-        await Bun.sleep(IDLE_MS * 4)
+        if (this.lostError) throw this.lostError
+        this.logger?.error({ err: error }, 'outbox relay tick failed')
+        await this.pause(IDLE_MS * 4)
       }
     }
   }
 
   stop(): void {
     this.stopping = true
+  }
+
+  private async confirmed(): Promise<void> {
+    let timer: Timer | undefined
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`broker did not confirm within ${CONFIRM_TIMEOUT_MS} ms`)), CONFIRM_TIMEOUT_MS)
+    })
+    const lost = this.broker.lost.then((error) => Promise.reject(error))
+    try {
+      await Promise.race([this.broker.channel.waitForConfirms(), timeout, lost])
+    } finally {
+      clearTimeout(timer)
+    }
+  }
+
+  private async pause(ms: number): Promise<void> {
+    await Promise.race([Bun.sleep(ms), this.broker.lost])
   }
 }

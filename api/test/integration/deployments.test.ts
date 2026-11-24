@@ -16,7 +16,7 @@ import { LocalKeyEncryptionKey } from '../../src/shared/crypto/key-encryption-ke
 import { SecretBox } from '../../src/shared/crypto/secret-box'
 import { UnitOfWork } from '../../src/shared/database/unit-of-work'
 import { Idempotency, IdempotencyConflictError } from '../../src/shared/idempotency/idempotency'
-import { Outbox } from '../../src/shared/outbox/outbox'
+import { Outbox, OutboxTopic } from '../../src/shared/outbox/outbox'
 import { db } from './setup'
 
 const unitOfWork = new UnitOfWork(db)
@@ -73,6 +73,57 @@ async function codeOf(work: Promise<unknown>): Promise<string | undefined> {
   }
 }
 
+/**
+ * Принудительное переплетение: `lock` берёт блокировку в своей транзакции и держит её, `during` стартует и
+ * встаёт в ожидание (видно по pg_stat_activity), и только тогда транзакция с блокировкой коммитится.
+ */
+async function whileLocked<T>(lock: (trx: typeof db) => Promise<unknown>, during: () => Promise<T>): Promise<T> {
+  let locked: () => void = () => {}
+  let release: () => void = () => {}
+  const isLocked = new Promise<void>((resolve) => (locked = resolve))
+  const released = new Promise<void>((resolve) => (release = resolve))
+  const holder = db.transaction().execute(async (trx) => {
+    await lock(trx)
+    locked()
+    await released
+  })
+  await isLocked
+
+  const pending = during()
+  pending.catch(() => undefined)
+  for (let i = 0; i < 200; i++) {
+    const waiting = await sql<{ n: number }>`
+      SELECT count(*)::int AS n FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock'
+    `.execute(db)
+    if ((waiting.rows[0]?.n ?? 0) > 0) break
+    await Bun.sleep(10)
+  }
+  release()
+  await holder
+
+  return pending
+}
+
+async function running(): Promise<{ id: string; version: number; destinationId: string }> {
+  const destinationId = await destination()
+  const { deployment } = await deployments.create(
+    { customerId: await customer(), destinationId, templateId: 'bita', config: bitaConfig },
+    'operator:1',
+  )
+  // Воркер ещё не написан (шаг 3): завершение provision — прямой записью
+  const row = await db
+    .updateTable('bot_deployment')
+    .set({ status: 'RUNNING', active_operation_id: null, version: sql<number>`version + 1` })
+    .where('id', '=', deployment.id)
+    .returning('version')
+    .executeTakeFirstOrThrow()
+  return { id: deployment.id, version: row.version, destinationId }
+}
+
+async function disable(destinationId: string, trx: typeof db = db) {
+  await trx.updateTable('destination').set({ status: 'DISABLED' }).where('id', '=', destinationId).execute()
+}
+
 async function outboxFor(deploymentId: string) {
   return db
     .selectFrom('outbox_message')
@@ -88,7 +139,7 @@ describe('создание развёртывания', () => {
       'operator:1',
     )
 
-    expect(deployment).toMatchObject({ status: 'PROVISIONING', activeOperationId: operation.id })
+    expect(deployment).toMatchObject({ status: 'PROVISIONING', activeOperationId: operation.id, tradingMode: 'sandbox' })
     expect(deployment.appName).toMatch(/^by-[0-9a-f]{12}$/)
     expect(deployment.config).toMatchObject({ figi: ['BBG004730N88'], strategy: 'gamble', logLevel: 'INFO', sellOnExit: false })
     expect(operation).toMatchObject({ kind: 'PROVISION', status: 'PENDING' })
@@ -133,6 +184,55 @@ describe('создание развёртывания', () => {
       ),
     ).toBe(DeploymentErrorCode.CUSTOMER_UNAVAILABLE)
   })
+
+  test('переплетение: назначение выключают, пока идёт создание — создание видит выключенное и отказывает', async () => {
+    const customerId = await customer()
+    const destinationId = await destination()
+
+    const outcome = await whileLocked(
+      (trx) => disable(destinationId, trx),
+      () => codeOf(deployments.create({ customerId, destinationId, templateId: 'bita', config: bitaConfig }, 'operator:1')),
+    )
+
+    expect(outcome).toBe(DeploymentErrorCode.DESTINATION_UNAVAILABLE)
+  })
+
+  test('переплетение: каталог переключил версию шаблона во время создания — берётся новая, а не «шаблон недоступен»', async () => {
+    const current = await db.selectFrom('bot_template').select('current_version').where('id', '=', 'bita').executeTakeFirstOrThrow()
+    const next = 'f'.repeat(64)
+    await sql`
+      INSERT INTO bot_template_version (template_id, version, name, manifest, files)
+      SELECT template_id, ${next}, name, manifest, files FROM bot_template_version
+      WHERE template_id = 'bita' AND version = ${current.current_version}
+      ON CONFLICT DO NOTHING
+    `.execute(db)
+    const customerId = await customer()
+    const destinationId = await destination()
+
+    try {
+      const created = await whileLocked(
+        (trx) => trx.updateTable('bot_template').set({ current_version: next }).where('id', '=', 'bita').execute(),
+        () => deployments.create({ customerId, destinationId, templateId: 'bita', config: bitaConfig }, 'operator:1'),
+      )
+      expect(created.deployment.templateVersion).toBe(next)
+    } finally {
+      await db.updateTable('bot_template').set({ current_version: current.current_version }).where('id', '=', 'bita').execute()
+    }
+  })
+
+  test('команда outbox пишется в транзакции изменения: откат — ни развёртывания, ни команды', async () => {
+    const before = await db.selectFrom('outbox_message').select(sql<number>`count(*)::int`.as('n')).executeTakeFirstOrThrow()
+
+    await expect(
+      unitOfWork.run(async () => {
+        await new Outbox(unitOfWork).enqueue(OutboxTopic.OPERATION_STEP, { probe: true })
+        throw new Error('rollback')
+      }),
+    ).rejects.toThrow('rollback')
+
+    const after = await db.selectFrom('outbox_message').select(sql<number>`count(*)::int`.as('n')).executeTakeFirstOrThrow()
+    expect(after.n).toBe(before.n)
+  })
 })
 
 describe('идемпотентность', () => {
@@ -170,16 +270,6 @@ describe('идемпотентность', () => {
 })
 
 describe('операции', () => {
-  async function running(): Promise<{ id: string; version: number }> {
-    const { deployment } = await deployments.create(
-      { customerId: await customer(), destinationId: await destination(), templateId: 'bita', config: bitaConfig },
-      'operator:1',
-    )
-    // Воркер ещё не написан (шаг 3): завершение provision — прямой записью
-    await db.updateTable('bot_deployment').set({ status: 'RUNNING', active_operation_id: null }).where('id', '=', deployment.id).execute()
-    return { id: deployment.id, version: deployment.version }
-  }
-
   test('во время provision другая операция не начинается', async () => {
     const { deployment } = await deployments.create(
       { customerId: await customer(), destinationId: await destination(), templateId: 'bita', config: bitaConfig },
@@ -212,6 +302,80 @@ describe('операции', () => {
     expect(await codeOf(deployments.operate(id, 'STOP', version - 1, 'operator:1'))).toBe(DeploymentErrorCode.VERSION_CONFLICT)
     const { deployment } = await deployments.operate(id, 'DELETE', version, 'operator:1')
     expect(deployment.status).toBe('DELETING')
+    expect((await outboxFor(id)).map((message) => message.payload)).toContainEqual(
+      expect.objectContaining({ deploymentId: id, kind: 'DELETE' }),
+    )
+  })
+
+  test('упавшее удаление (DELETING без активной операции) можно повторить', async () => {
+    const { id, version } = await running()
+    const { deployment } = await deployments.operate(id, 'DELETE', version, 'operator:1')
+    // Воркер не справился с удалением: операция закрыта, развёртывание осталось в DELETING
+    await db.updateTable('bot_deployment').set({ active_operation_id: null }).where('id', '=', id).execute()
+
+    const retried = await deployments.operate(id, 'DELETE', deployment.version, 'operator:1')
+    expect(retried.deployment.status).toBe('DELETING')
+    expect(retried.operation.kind).toBe('DELETE')
+  })
+
+  test('на выключенном назначении запуск и передеплой запрещены, остановка и удаление — можно', async () => {
+    const { id, version, destinationId } = await running()
+    await disable(destinationId)
+
+    expect(await codeOf(deployments.operate(id, 'REDEPLOY', version, 'operator:1'))).toBe(DeploymentErrorCode.DESTINATION_UNAVAILABLE)
+    const stopping = await deployments.operate(id, 'STOP', version, 'operator:1')
+    expect(stopping.operation.kind).toBe('STOP')
+
+    await db.updateTable('bot_deployment').set({ status: 'STOPPED', active_operation_id: null }).where('id', '=', id).execute()
+    expect(await codeOf(deployments.operate(id, 'START', stopping.deployment.version, 'operator:1'))).toBe(
+      DeploymentErrorCode.DESTINATION_UNAVAILABLE,
+    )
+    const deleting = await deployments.operate(id, 'DELETE', stopping.deployment.version, 'operator:1')
+    expect(deleting.deployment.status).toBe('DELETING')
+  })
+
+  test('переплетение: назначение выключают, пока захватывается передеплой — отказ и захват откатан', async () => {
+    const { id, version, destinationId } = await running()
+
+    const outcome = await whileLocked(
+      (trx) => disable(destinationId, trx),
+      () => codeOf(deployments.operate(id, 'REDEPLOY', version, 'operator:1')),
+    )
+
+    expect(outcome).toBe(DeploymentErrorCode.DESTINATION_UNAVAILABLE)
+    const after = await db
+      .selectFrom('bot_deployment')
+      .select(['active_operation_id', 'version'])
+      .where('id', '=', id)
+      .executeTakeFirstOrThrow()
+    expect(after).toEqual({ active_operation_id: null, version })
+  })
+
+  test('одновременные операции с одним ключом идемпотентности — одна операция, одинаковый ответ', async () => {
+    const { id, version } = await running()
+    const key = `key-${crypto.randomUUID()}`
+    const stopOnce = () =>
+      idempotency.run(`operator:1:deployments.${id}.operate`, key, { id, kind: 'STOP', version }, async () => {
+        const { operation } = await deployments.operate(id, 'STOP', version, 'operator:1')
+        return { statusCode: 202, response: { operationId: operation.id } }
+      })
+
+    const [a, b] = await Promise.all([stopOnce(), stopOnce()])
+    expect(a.response).toEqual(b.response)
+    const stops = await db.selectFrom('operation').select('id').where('deployment_id', '=', id).where('kind', '=', 'STOP').execute()
+    expect(stops).toHaveLength(1)
+  })
+
+  test('активной операцией нельзя сделать операцию чужого развёртывания (составной FK)', async () => {
+    const mine = await running()
+    const other = await deployments.create(
+      { customerId: await customer(), destinationId: await destination(), templateId: 'bita', config: bitaConfig },
+      'operator:1',
+    )
+
+    await expect(
+      db.updateTable('bot_deployment').set({ active_operation_id: other.operation.id }).where('id', '=', mine.id).execute(),
+    ).rejects.toThrow()
   })
 })
 
@@ -221,6 +385,50 @@ describe('клиент и его развёртывания', () => {
     await deployments.create({ customerId, destinationId: await destination(), templateId: 'bita', config: bitaConfig }, 'operator:1')
 
     expect(await codeOf(customers.archive(customerId, 1, 'operator:1'))).toBe(CustomerErrorCode.HAS_DEPLOYMENTS)
+  })
+
+  test('режим клиента с живым развёртыванием не переключается; развёртывание помнит свой режим', async () => {
+    const customerId = await customer()
+    const { deployment } = await deployments.create(
+      { customerId, destinationId: await destination(), templateId: 'bita', config: bitaConfig },
+      'operator:1',
+    )
+    const current = await customers.get(customerId)
+
+    expect(
+      await codeOf(
+        customers.goLive(
+          customerId,
+          { version: current.version, token: 't.live-token-0123456789abcdef', accountId: 'live-account', confirmName: current.name },
+          'operator:1',
+        ),
+      ),
+    ).toBe(CustomerErrorCode.HAS_DEPLOYMENTS)
+    expect((await customers.get(customerId)).sandbox).toBe(true)
+    expect(deployment.tradingMode).toBe('sandbox')
+  })
+
+  test('гонка: создание развёртывания против перевода клиента в боевой — режим развёртывания всегда равен режиму клиента', async () => {
+    for (let round = 0; round < 5; round++) {
+      const customerId = await customer()
+      const destinationId = await destination()
+      const current = await customers.get(customerId)
+      const [created, switched] = await Promise.allSettled([
+        deployments.create({ customerId, destinationId, templateId: 'bita', config: bitaConfig }, 'operator:1'),
+        customers.goLive(
+          customerId,
+          { version: current.version, token: 't.live-token-0123456789abcdef', accountId: 'live-account', confirmName: current.name },
+          'operator:2',
+        ),
+      ])
+
+      // Переход первым — робот создаётся уже боевым; создание первым — переход отклонён. Песочный робот у боевого
+      // клиента (или наоборот) — то, что запрещено
+      expect(created.status).toBe('fulfilled')
+      const mode = (await customers.get(customerId)).sandbox ? 'sandbox' : 'live'
+      if (created.status === 'fulfilled') expect(created.value.deployment.tradingMode).toBe(mode)
+      if (switched.status === 'rejected') expect(switched.reason).toMatchObject({ code: CustomerErrorCode.HAS_DEPLOYMENTS })
+    }
   })
 
   test('гонка: создание развёртывания против архивации клиента — никогда не проходят оба', async () => {

@@ -81,5 +81,3 @@ export const CATALOG_REPOSITORY = Symbol('CATALOG_REPOSITORY')
 export interface CatalogSource {
   read(): Promise<TemplateSource[]>
 }
-
-export { canonicalJson }

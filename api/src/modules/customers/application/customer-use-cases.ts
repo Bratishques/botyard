@@ -123,13 +123,15 @@ export class CustomerUseCases {
     const accountId = normalizeAccountId(input.accountId)
     const tokenSealed = await this.box.seal(input.token, tokenContext(id, 'live'))
 
-    return this.write(
-      id,
-      input.version,
-      { sandbox: false, accountId, tokenSealed, tokenHint: secretHint(input.token) },
-      actor,
-      'customer.live_enabled',
-      { accountId: { from: current.accountId, to: accountId } },
+    return this.switchMode(id, () =>
+      this.write(
+        id,
+        input.version,
+        { sandbox: false, accountId, tokenSealed, tokenHint: secretHint(input.token) },
+        actor,
+        'customer.live_enabled',
+        { accountId: { from: current.accountId, to: accountId } },
+      ),
     )
   }
 
@@ -140,14 +142,31 @@ export class CustomerUseCases {
     const accountId = normalizeAccountId(input.accountId)
     const tokenSealed = await this.box.seal(input.token, tokenContext(id, 'sandbox'))
 
-    return this.write(
-      id,
-      input.version,
-      { sandbox: true, accountId, tokenSealed, tokenHint: secretHint(input.token) },
-      actor,
-      'customer.sandbox_enabled',
-      { accountId: { from: current.accountId, to: accountId } },
+    return this.switchMode(id, () =>
+      this.write(
+        id,
+        input.version,
+        { sandbox: true, accountId, tokenSealed, tokenHint: secretHint(input.token) },
+        actor,
+        'customer.sandbox_enabled',
+        { accountId: { from: current.accountId, to: accountId } },
+      ),
     )
+  }
+
+  /**
+   * Смена режима — только без живых развёртываний. Иначе робот, созданный в песочнице, при следующем
+   * redeploy получил бы боевой токен: настоящие деньги без решения по этому роботу. Блокировка та же,
+   * что у архивации: создание развёртывания держит клиента под FOR SHARE и не проскочит мимо.
+   */
+  private switchMode(id: string, write: () => Promise<Customer>): Promise<Customer> {
+    return this.unitOfWork.run(async () => {
+      if (await this.repository.hasLiveDeployments(id)) {
+        throw new CustomerError(CustomerErrorCode.HAS_DEPLOYMENTS, 'delete the customer deployments before switching the trading mode')
+      }
+
+      return write()
+    })
   }
 
   /**

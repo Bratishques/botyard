@@ -105,6 +105,7 @@ export interface BotDeploymentTable {
   template_id: string
   template_version: string
   config: ColumnType<Record<string, unknown>, string, never>
+  trading_mode: 'sandbox' | 'live'
   app_name: string
   status: DeploymentStatus
   dokploy_app_id: string | null
