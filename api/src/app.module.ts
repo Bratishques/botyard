@@ -1,6 +1,9 @@
 import { type DynamicModule, type MiddlewareConsumer, Module, type NestModule } from '@nestjs/common'
 import { LoggerModule } from 'nestjs-pino'
+import { AuthModule } from './modules/auth/auth.module'
+import { DestinationsModule } from './modules/destinations/destinations.module'
 import { HealthModule } from './modules/health/health.module'
+import { AuditModule } from './shared/audit/audit'
 import type { AppConfig } from './shared/config/config'
 import { ConfigModule } from './shared/config/config.module'
 import { CryptoModule } from './shared/crypto/crypto.module'
@@ -14,7 +17,16 @@ export class AppModule implements NestModule {
   static forRoot(config: AppConfig): DynamicModule {
     return {
       module: AppModule,
-      imports: [ConfigModule.forRoot(config), LoggerModule.forRoot(loggerOptions(config)), DatabaseModule, CryptoModule, HealthModule],
+      imports: [
+        ConfigModule.forRoot(config),
+        LoggerModule.forRoot(loggerOptions(config)),
+        DatabaseModule,
+        CryptoModule,
+        AuditModule,
+        HealthModule,
+        AuthModule,
+        DestinationsModule,
+      ],
       providers: [MetricsServer],
     }
   }

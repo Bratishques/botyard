@@ -1,4 +1,5 @@
 import { Controller, Get, HttpCode, Inject, Logger, ServiceUnavailableException } from '@nestjs/common'
+import { Public } from '../../auth/presentation/session.guard'
 import { READINESS_CHECKS, type ReadinessCheck } from '../domain/readiness-check'
 
 /**
@@ -6,6 +7,7 @@ import { READINESS_CHECKS, type ReadinessCheck } from '../domain/readiness-check
  * ready — процесс готов принимать трафик. Проверяются только собственные зависимости (БД),
  * но не Dokploy: недоступное назначение — не повод выводить из балансировки весь api.
  */
+@Public()
 @Controller('health')
 export class HealthController {
   private readonly logger = new Logger(HealthController.name)

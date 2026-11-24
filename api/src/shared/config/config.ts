@@ -48,6 +48,17 @@ const schema = z
     DATABASE_URL: z.url({ protocol: /^postgres(ql)?$/ }),
     // http-адрес назначения: только для локальной разработки, ключ Dokploy по открытому каналу не уходит
     DESTINATIONS_ALLOW_HTTP: flag,
+    // Cookie сессии только по https. Выключается для локальной разработки по http
+    SESSION_COOKIE_SECURE: z
+      .enum(['true', 'false'])
+      .default('true')
+      .transform((value) => value === 'true'),
+    SESSION_TTL_HOURS: z
+      .string()
+      .regex(/^\d{1,4}$/)
+      .transform(Number)
+      .pipe(z.number().min(1).max(720))
+      .default(12),
     SECRETS_MASTER_KEY: masterKey,
     // Номер ключа в конвертах: при ротации новый ключ получает новый номер (см. shared/crypto)
     SECRETS_MASTER_KEY_ID: z

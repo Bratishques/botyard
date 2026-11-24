@@ -7,6 +7,8 @@ import type { ColumnType, Generated } from 'kysely'
 export interface Database {
   destination: DestinationTable
   audit_event: AuditEventTable
+  operator: OperatorTable
+  operator_session: OperatorSessionTable
 }
 
 type CreatedAt = ColumnType<Date, Date | undefined, never>
@@ -38,4 +40,19 @@ export interface AuditEventTable {
   payload: ColumnType<Record<string, unknown>, Record<string, unknown> | undefined, never>
   // Время события ставит база: журнал, где время задаёт вызывающий, ничего не доказывает
   created_at: ColumnType<Date, never, never>
+}
+
+export interface OperatorTable {
+  id: string
+  email: string
+  password_hash: string
+  created_at: CreatedAt
+}
+
+export interface OperatorSessionTable {
+  token_hash: Uint8Array
+  operator_id: string
+  created_at: CreatedAt
+  expires_at: Date
+  revoked_at: Date | null
 }

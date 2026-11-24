@@ -13,7 +13,8 @@
     "test:int": "bun --env-file=.env.test test --preload ./test/integration/setup.ts test/integration",
     "migrate": "bun src/cli/migrate.ts",
     "check": "bun run lint && bun run typecheck && bun run test",
-    "test:contract": "bun test test/contract"
+    "test:contract": "bun test test/contract",
+    "operator:create": "bun src/cli/create-operator.ts"
   },
   "dependencies": {
     "@nestjs/common": "^12.6.0",
