@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://botyard.local/schema/template.schema.json",
+  "title": "Botyard bot template",
+  "type": "object",
+  "required": ["id", "name", "upstream", "build", "config"],
+  "additionalProperties": false,
+  "properties": {
+    "$schema": { "type": "string" },
+    "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{1,38}$" },
+    "name": { "type": "string" },
+    "description": { "type": "string" },
+    "upstream": {
+      "type": "object",
+      "required": ["gitUrl", "ref", "license"],
+      "additionalProperties": false,
+      "properties": {
+        "gitUrl": { "type": "string", "pattern": "^https://" },
+        "ref": { "type": "string", "description": "Ветка, тег или коммит. Для воспроизводимости лучше коммит" },
+        "license": { "type": "string" }
+      }
+    },
+    "build": {
+      "type": "object",
+      "required": ["type", "dockerfile", "context"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "const": "dockerfile" },
+        "dockerfile": { "type": "string" },
+        "context": { "type": "string" }
+      }
+    },
+    "config": {
+      "type": "object",
+      "required": ["delivery", "schema"],
+      "properties": {
+        "delivery": { "enum": ["env", "file"] },
+        "schema": { "type": "object", "description": "JSON Schema пользовательского конфига" },
+        "env": { "type": "object", "additionalProperties": { "type": "string" } },
+        "mountPath": { "type": "string" },
+        "template": { "type": "string" }
+      },
+      "allOf": [
+        { "if": { "properties": { "delivery": { "const": "env" } } }, "then": { "required": ["env"] } },
+        { "if": { "properties": { "delivery": { "const": "file" } } }, "then": { "required": ["mountPath", "template"] } }
+      ]
+    },
+    "metrics": {
+      "type": "object",
+      "required": ["port", "path"],
+      "properties": { "port": { "type": "integer" }, "path": { "type": "string" } }
+    },
+    "notes": { "type": "array", "items": { "type": "string" } }
+  }
+}
