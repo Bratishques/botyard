@@ -7,9 +7,11 @@
 назначения (Dokploy-инстансы) и клиентов, выбирает робота из каталога — платформа создаёт приложение
 в Dokploy, собирает образ из исходников робота, передаёт конфиг и секреты, запускает и следит за состоянием.
 
-*A platform that deploys open-source T-Invest trading bots for customers through the Dokploy API:
-orchestrated saga over a non-idempotent external API, transactional outbox with RabbitMQ, conditional
-state transitions with race tests, envelope encryption of customer secrets. Bun, NestJS, PostgreSQL.*
+*Work in progress. A platform that deploys open-source T-Invest trading bots for customers through
+the Dokploy API. Designed: an orchestrated saga over a non-idempotent external API, transactional outbox
+with RabbitMQ, race-tested state transitions. Done so far: envelope encryption of customer secrets,
+append-only audit enforced by the database, log redaction, the api skeleton with integration tests.
+Bun, NestJS, PostgreSQL.*
 
 ```
 admin ──► api ──► outbox ──► RabbitMQ ──► worker ──► Dokploy ──► контейнер робота ──► T-Invest API (песочница)
@@ -17,23 +19,27 @@ admin ──► api ──► outbox ──► RabbitMQ ──► worker ──�
                     └──── reconciler ◄── вебхуки и опрос ┘
 ```
 
-## Что здесь интересного
+## Статус
+
+Проект в разработке: этап 1 из 5 ([план](api/docs/roadmap.md)). Дизайн целиком —
+в [архитектуре](api/docs/architecture.md): домен, машина состояний, шаги саги, разобранные гонки.
+
+**Уже сделано**
+
+- **Envelope encryption** секретов клиентов: AES-256-GCM, свой ключ данных на каждую запись, AAD привязывает
+  шифртекст к записи и к адресу, куда секрет уйдёт; мастер-ключ за портом. Тесты проверены мутациями.
+- **Append-only аудит**, запрещённый на уровне базы (UPDATE, DELETE, TRUNCATE), CHECK-ограничения на инварианты.
+- **Маскирование секретов в логах** по имени поля и виду значения на любой глубине.
+- Каркас api: конфиг с проверкой при старте, JSON-логи, health live/ready, метрики Prometheus на отдельном порту,
+  миграции, интеграционные тесты на настоящем Postgres, CI.
+
+**Спроектировано, реализуется по плану**
 
 - **Сага поверх неидемпотентного API.** У `application.create` в Dokploy нет ключа идемпотентности:
   имя приложения выводится из id развёртывания, и перед созданием сага ищет приложение по нему — потерянный
   ответ не создаёт второе. Таймаут считается неизвестным исходом, а не отказом.
 - **Transactional outbox → RabbitMQ**, inbox для вебхуков, reconciler для зависших операций и дрейфа.
 - **Условные переходы состояний** и тесты гонок: двойной деплой, стоп против провижининга, вебхук против опроса.
-- **Envelope encryption** токенов клиентов: AES-256-GCM, ключ данных на запись, AAD привязывает шифртекст
-  к строке, мастер-ключ за портом (локальный ключ или KMS).
-- **Append-only аудит**, запрещённый на уровне базы, маскирование секретов в логах на любой глубине.
-
-Подробно — [архитектура](api/docs/architecture.md): домен, машина состояний, шаги саги, разобранные гонки.
-
-## Статус
-
-Этап 1 из 5 ([план](api/docs/roadmap.md)): каркас api, конфиг, логи, health, метрики, миграции,
-шифрование секретов, интеграционные тесты. Дальше — адаптер Dokploy и назначения, затем сага.
 
 ## Структура
 
