@@ -64,18 +64,27 @@ export class CustomerUseCases {
         action: 'customer.created',
         targetType: 'customer',
         targetId: id,
-        payload: { name, accountId, tokenHint },
+        payload: { name, accountId, tokenHint, version: created.version },
       })
 
       return created
     })
   }
 
-  async update(id: string, input: { version: number; name?: string; accountId?: string }, actor: string): Promise<Customer> {
+  /**
+   * Правка имени и счёта. Сменить счёт боевого клиента — значит направить его роботов торговать другим
+   * счётом настоящими деньгами: это требует того же подтверждения именем, что и переход в боевой режим.
+   */
+  async update(
+    id: string,
+    input: { version: number; name?: string; accountId?: string; confirmName?: string },
+    actor: string,
+  ): Promise<Customer> {
     const current = await this.active(id, input.version)
     const changes: { -readonly [K in keyof CustomerChanges]: CustomerChanges[K] } = {}
     if (input.name !== undefined && normalizeCustomerName(input.name) !== current.name) changes.name = normalizeCustomerName(input.name)
     if (input.accountId !== undefined && normalizeAccountId(input.accountId) !== current.accountId) {
+      if (!current.sandbox) confirmLive(current, input.confirmName)
       changes.accountId = normalizeAccountId(input.accountId)
     }
     if (Object.keys(changes).length === 0) return current
@@ -94,47 +103,55 @@ export class CustomerUseCases {
   }
 
   /**
-   * Перевод в боевой режим: боевой токен и подтверждение точным именем клиента. Токен песочницы при этом
-   * не переносится — его конверт привязан к режиму и в боевом не откроется.
+   * Перевод в боевой режим: боевой токен, боевой счёт и подтверждение точным именем клиента. Счета
+   * песочницы и боевые — разные, поэтому счёт меняется вместе с режимом. Токен песочницы не переносится —
+   * его конверт привязан к режиму и в боевом не откроется.
    */
-  async goLive(id: string, input: { version: number; token: string; confirmName: string }, actor: string): Promise<Customer> {
+  async goLive(
+    id: string,
+    input: { version: number; token: string; accountId: string; confirmName: string },
+    actor: string,
+  ): Promise<Customer> {
     const current = await this.active(id, input.version)
     if (!current.sandbox) throw new CustomerError(CustomerErrorCode.ALREADY_IN_MODE, 'customer is already live')
-    if (input.confirmName !== current.name) {
-      throw new CustomerError(CustomerErrorCode.LIVE_CONFIRMATION_REQUIRED, 'type the exact customer name to confirm live trading')
-    }
+    confirmLive(current, input.confirmName)
+    const accountId = normalizeAccountId(input.accountId)
     const tokenSealed = await this.box.seal(input.token, tokenContext(id, 'live'))
 
     return this.write(
       id,
       input.version,
-      { sandbox: false, tokenSealed, tokenHint: secretHint(input.token) },
+      { sandbox: false, accountId, tokenSealed, tokenHint: secretHint(input.token) },
       actor,
       'customer.live_enabled',
       {},
     )
   }
 
-  /** Возврат в песочницу — с токеном песочницы: боевой токен в песочнице не нужен и не хранится */
-  async goSandbox(id: string, input: { version: number; token: string }, actor: string): Promise<Customer> {
+  /** Возврат в песочницу — с токеном и счётом песочницы: боевые в песочнице не нужны и не хранятся */
+  async goSandbox(id: string, input: { version: number; token: string; accountId: string }, actor: string): Promise<Customer> {
     const current = await this.active(id, input.version)
     if (current.sandbox) throw new CustomerError(CustomerErrorCode.ALREADY_IN_MODE, 'customer is already in the sandbox')
+    const accountId = normalizeAccountId(input.accountId)
     const tokenSealed = await this.box.seal(input.token, tokenContext(id, 'sandbox'))
 
     return this.write(
       id,
       input.version,
-      { sandbox: true, tokenSealed, tokenHint: secretHint(input.token) },
+      { sandbox: true, accountId, tokenSealed, tokenHint: secretHint(input.token) },
       actor,
       'customer.sandbox_enabled',
       {},
     )
   }
 
-  /** Архивация; повтор — без изменений */
+  /**
+   * Архивация. Повтор после обрыва (та же или более ранняя версия, клиент уже в архиве) возвращает
+   * клиента без изменений: архив — конечное состояние, перепутать его с чужой правкой нельзя.
+   */
   async archive(id: string, version: number, actor: string): Promise<Customer> {
     const current = await this.get(id)
-    if (current.status === CustomerStatus.ARCHIVED && current.version === version) return current
+    if (current.status === CustomerStatus.ARCHIVED && version <= current.version) return current
     if (current.version !== version) throw versionConflict(id)
 
     return this.write(id, version, { status: CustomerStatus.ARCHIVED }, actor, 'customer.archived', {})
@@ -173,6 +190,12 @@ export class CustomerUseCases {
 
       return updated
     })
+  }
+}
+
+function confirmLive(customer: Customer, confirmName: string | undefined): void {
+  if (confirmName !== customer.name) {
+    throw new CustomerError(CustomerErrorCode.LIVE_CONFIRMATION_REQUIRED, 'type the exact customer name to confirm live trading')
   }
 }
 

@@ -23,9 +23,17 @@ const token = z.string().trim().min(16).max(512)
 const version = z.number().int().positive()
 
 const createSchema = z.object({ name: z.string().max(200), accountId: z.string().max(100), token }).strict()
-const updateSchema = z.object({ version, name: z.string().max(200).optional(), accountId: z.string().max(100).optional() }).strict()
+const updateSchema = z
+  .object({
+    version,
+    name: z.string().max(200).optional(),
+    accountId: z.string().max(100).optional(),
+    confirmName: z.string().max(200).optional(),
+  })
+  .strict()
 const tokenSchema = z.object({ version, token }).strict()
-const liveSchema = z.object({ version, token, confirmName: z.string().max(200) }).strict()
+const liveSchema = z.object({ version, token, accountId: z.string().max(100), confirmName: z.string().max(200) }).strict()
+const sandboxSchema = z.object({ version, token, accountId: z.string().max(100) }).strict()
 const versionSchema = z.object({ version }).strict()
 
 /** Клиент наружу: без конверта токена, только подсказка */
@@ -133,7 +141,7 @@ export class CustomersController {
   @HttpCode(HttpStatus.OK)
   async goSandbox(
     @Param('id', CUSTOMER_ID) id: string,
-    @Body(new ZodBody(tokenSchema)) body: z.infer<typeof tokenSchema>,
+    @Body(new ZodBody(sandboxSchema)) body: z.infer<typeof sandboxSchema>,
     @CurrentOperator() operator: Operator,
   ) {
     return view(await http(this.customers.goSandbox(id, body, actor(operator))))
