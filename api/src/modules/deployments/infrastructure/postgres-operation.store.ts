@@ -126,6 +126,9 @@ export class PostgresOperationStore implements OperationStore {
           status: finish.deploymentStatus,
           last_error: finish.error,
           active_operation_id: null,
+          // Операция сама привела Dokploy к своему итогу: прежнее наблюдение дрейфа устарело
+          drift: null,
+          drift_checked_at: null,
           version: sql<number>`version + 1`,
           updated_at: sql<Date>`now()`,
           ...(finish.dokployAppId !== undefined && { dokploy_app_id: finish.dokployAppId }),
@@ -202,6 +205,9 @@ export class PostgresOperationStore implements OperationStore {
           status: finish.deploymentStatus,
           last_error: finish.error,
           active_operation_id: null,
+          // Операция сама привела Dokploy к своему итогу: прежнее наблюдение дрейфа устарело
+          drift: null,
+          drift_checked_at: null,
           version: sql<number>`version + 1`,
           updated_at: sql<Date>`now()`,
         })

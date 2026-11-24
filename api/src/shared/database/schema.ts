@@ -100,6 +100,8 @@ export type DeploymentStatus = 'PROVISIONING' | 'RUNNING' | 'STOPPED' | 'FAILED'
 export type OperationKind = 'PROVISION' | 'START' | 'STOP' | 'REDEPLOY' | 'DELETE'
 export type OperationStatus = 'PENDING' | 'RUNNING' | 'SUCCEEDED' | 'FAILED'
 
+export type DeploymentDrift = 'APP_MISSING' | 'STOPPED_IN_DOKPLOY' | 'RUNNING_IN_DOKPLOY' | 'FAILED_IN_DOKPLOY'
+
 export interface BotDeploymentTable {
   id: string
   customer_id: string
@@ -113,6 +115,8 @@ export interface BotDeploymentTable {
   dokploy_app_id: string | null
   active_operation_id: string | null
   last_error: string | null
+  drift: DeploymentDrift | null
+  drift_checked_at: Date | null
   version: Generated<number>
   created_at: CreatedAt
   updated_at: UpdatedAt

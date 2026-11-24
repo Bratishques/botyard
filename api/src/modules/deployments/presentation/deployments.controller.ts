@@ -44,6 +44,8 @@ function deploymentView(deployment: Deployment): DeploymentView {
     status: deployment.status,
     activeOperationId: deployment.activeOperationId,
     lastError: deployment.lastError,
+    drift: deployment.drift,
+    driftCheckedAt: deployment.driftCheckedAt?.toISOString() ?? null,
     version: deployment.version,
     createdAt: deployment.createdAt.toISOString(),
     updatedAt: deployment.updatedAt.toISOString(),

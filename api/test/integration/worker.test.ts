@@ -8,6 +8,7 @@ import { CustomerUseCases } from '../../src/modules/customers/application/custom
 import { PostgresCustomerRepository } from '../../src/modules/customers/infrastructure/postgres-customer.repository'
 import { DeploymentUseCases } from '../../src/modules/deployments/application/deployment-use-cases'
 import { DokployWebhookHandler } from '../../src/modules/deployments/application/dokploy-webhook-handler'
+import { DriftReconciler } from '../../src/modules/deployments/application/drift-reconciler'
 import { OperationReconciler } from '../../src/modules/deployments/application/operation-reconciler'
 import { OperationWorker, type StepMessage } from '../../src/modules/deployments/application/operation-worker'
 import {
@@ -97,8 +98,11 @@ class FakePlatform implements DeploymentPlatform {
     const list = this.deployments.get(appId) ?? []
     const latest = list.at(-1)
     if (latest?.status === 'running') {
-      if (this.pollsUntilDone <= 0) list[list.length - 1] = { ...latest, status: this.deployResult }
-      else this.pollsUntilDone--
+      if (this.pollsUntilDone <= 0) {
+        list[list.length - 1] = { ...latest, status: this.deployResult }
+        const app = this.apps.get(appId)
+        if (app && this.deployResult === 'done') app.running = true
+      } else this.pollsUntilDone--
     }
     return list.at(-1) ?? null
   }
@@ -125,6 +129,18 @@ class FakePlatform implements DeploymentPlatform {
 
   /** Удаление «прошло», а приложение осталось (Dokploy ответил 200, но не удалил) */
   keepOnDelete = false
+
+  /** Состояние приложения для сверки дрейфа: по умолчанию — по флагу running */
+  statusOverride = new Map<string, string>()
+
+  async appStatus(target: PlatformTarget, appId: string): Promise<string> {
+    this.record('appStatus', target)
+    const override = this.statusOverride.get(appId)
+    if (override) return override
+    const app = this.apps.get(appId)
+    if (!app) return 'missing'
+    return app.running ? 'done' : 'idle'
+  }
 
   async deleteApp(target: PlatformTarget, appId: string): Promise<void> {
     this.record('deleteApp', target)
@@ -899,5 +915,50 @@ describe('вебхук Dokploy о сборке', () => {
     const claimed = await store.claim(operation.id, 'await_deploy', (await pending(operation.id))[0]?.message.wake ?? null, 60_000)
     expect('reason' in claimed).toBe(false)
     expect(await handler.handle(target.id, event(deployment.appName))).toBe('ignored')
+  })
+})
+
+describe('сверка дрейфа с Dokploy', () => {
+  const reconciler = () =>
+    new DriftReconciler(new PostgresDeploymentRepository(unitOfWork), currentPlatform, destinations, unitOfWork, audit)
+  let currentPlatform = new FakePlatform()
+  const due = (id: string) => sql`UPDATE bot_deployment SET drift_checked_at = now() - interval '6 minutes' WHERE id = ${id}`.execute(db)
+  const driftOfRow = async (id: string) =>
+    await db.selectFrom('bot_deployment').select(['drift', 'status', 'version']).where('id', '=', id).executeTakeFirstOrThrow()
+
+  test('робота остановили руками в Dokploy — дрейф с аудитом, статус не меняется; запустили обратно — дрейф снят', async () => {
+    currentPlatform = new FakePlatform()
+    const { deployment } = await running(currentPlatform)
+    const [app] = [...currentPlatform.apps.values()]
+    if (!app) throw new Error('no app')
+    const before = await driftOfRow(deployment.id)
+
+    app.running = false
+    await reconciler().tick()
+    expect(await driftOfRow(deployment.id)).toEqual({ ...before, drift: 'STOPPED_IN_DOKPLOY' })
+
+    app.running = true
+    await reconciler().tick() // сверено только что — не чаще раза в 5 минут
+    expect((await driftOfRow(deployment.id)).drift).toBe('STOPPED_IN_DOKPLOY')
+    await due(deployment.id)
+    await reconciler().tick()
+    expect((await driftOfRow(deployment.id)).drift).toBeNull()
+
+    const events = await db.selectFrom('audit_event').select(['action', 'actor']).where('target_id', '=', deployment.id).execute()
+    expect(events.map((event) => event.action)).toEqual(expect.arrayContaining(['deployment.drift_detected', 'deployment.drift_cleared']))
+  })
+
+  test('приложение удалили в Dokploy — APP_MISSING; операция оператора важнее наблюдения; её итог сбрасывает дрейф', async () => {
+    currentPlatform = new FakePlatform()
+    const { deployment, version } = await running(currentPlatform)
+    currentPlatform.apps.clear()
+    await reconciler().tick()
+    expect((await driftOfRow(deployment.id)).drift).toBe('APP_MISSING')
+
+    // Оператор запросил redeploy: пока операция активна, сверка развёртывание не трогает
+    const redeploy = await deployments.operate(deployment.id, 'REDEPLOY', (await driftOfRow(deployment.id)).version, 'operator:1')
+    expect(await new PostgresDeploymentRepository(unitOfWork).recordDrift(deployment.id, version, null)).toBe(false)
+    await drive(workerWith(currentPlatform), redeploy.operation.id)
+    expect(await driftOfRow(deployment.id)).toMatchObject({ status: 'RUNNING', drift: null })
   })
 })

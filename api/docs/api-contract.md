@@ -123,7 +123,9 @@
 
 `Deployment`: `{ id, customerId, destinationId, templateId, templateVersion, config, tradingMode, appName, status, activeOperationId,
 lastError, version, createdAt, updatedAt }`; статусы `PROVISIONING | RUNNING | STOPPED | FAILED | DELETING | DELETED`;
-`tradingMode` — `sandbox | live`, режим клиента на момент создания.
+`tradingMode` — `sandbox | live`, режим клиента на момент создания. `drift` — расхождение с Dokploy, замеченное
+reconciler'ом (`APP_MISSING | STOPPED_IN_DOKPLOY | RUNNING_IN_DOKPLOY | FAILED_IN_DOKPLOY` или `null`),
+`driftCheckedAt` — когда сверяли; статус развёртывания дрейф не меняет.
 `Operation`: `{ id, kind: PROVISION | START | STOP | REDEPLOY | DELETE, status: PENDING | RUNNING | SUCCEEDED | FAILED, step,
 attempt, error, requestedBy, createdAt, finishedAt }`; `step` — текущий шаг саги (`ensure_app`, `configure`,
 `prepare_deploy`, `deploy`, `await_deploy`, `start`, `stop`, `delete`), `attempt` — попытка этого шага,
@@ -179,3 +181,4 @@ attempt, error, requestedBy, createdAt, finishedAt }`; `step` — текущий
   теперь строгое, как у остальных: лишние поля — `400 VALIDATION_FAILED`.
 - 2026-11-24 — `Idempotency-Key` помнится не меньше суток.
 - 2026-11-25 — вебхуки Dokploy: `POST /webhooks/dokploy/:destinationId`, `WEBHOOK_UNAUTHORIZED`.
+- 2026-11-25 — `drift` и `driftCheckedAt` в развёртывании.

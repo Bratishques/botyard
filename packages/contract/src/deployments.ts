@@ -19,6 +19,9 @@ export type DeploymentStatus = 'PROVISIONING' | 'RUNNING' | 'STOPPED' | 'FAILED'
 export type OperationKind = 'PROVISION' | 'START' | 'STOP' | 'REDEPLOY' | 'DELETE'
 export type OperationStatus = 'PENDING' | 'RUNNING' | 'SUCCEEDED' | 'FAILED'
 
+/** Расхождение с Dokploy, замеченное reconciler'ом (робота трогали руками в Dokploy). Не статус: решает оператор */
+export type DeploymentDrift = 'APP_MISSING' | 'STOPPED_IN_DOKPLOY' | 'RUNNING_IN_DOKPLOY' | 'FAILED_IN_DOKPLOY'
+
 export interface OperationView {
   id: string
   kind: OperationKind
@@ -44,6 +47,8 @@ export interface DeploymentView {
   status: DeploymentStatus
   activeOperationId: string | null
   lastError: string | null
+  drift: DeploymentDrift | null
+  driftCheckedAt: string | null
   version: number
   createdAt: string
   updatedAt: string

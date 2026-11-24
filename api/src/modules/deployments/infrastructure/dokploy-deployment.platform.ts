@@ -27,6 +27,7 @@ const searchSchema = z.object({ items: z.array(appSchema) })
 const mountsSchema = z.object({
   mounts: z.array(z.object({ mountId: z.string().min(1), type: z.string(), mountPath: z.string() })),
 })
+const appStatusSchema = z.object({ applicationStatus: z.string() })
 const deploymentsSchema = z.array(z.object({ deploymentId: z.string().min(1), status: z.string(), createdAt: z.string() }))
 
 /**
@@ -147,6 +148,16 @@ export class DokployDeploymentPlatform implements DeploymentPlatform {
       // такой ответ не повод считать робота удалённым
       if (error instanceof DokployRejectedError && error.status === 404 && error.message.endsWith('404 Service not found')) return
       throw toPlatformError('application.delete', error)
+    }
+  }
+
+  async appStatus(target: PlatformTarget, appId: string): Promise<string> {
+    try {
+      const app = await this.dokploy.query(connection(target), 'application.one', { applicationId: appId }, appStatusSchema)
+      return app.applicationStatus
+    } catch (error) {
+      if (error instanceof DokployRejectedError && error.status === 404 && error.message.endsWith('404 Service not found')) return 'missing'
+      throw toPlatformError('application.one', error)
     }
   }
 

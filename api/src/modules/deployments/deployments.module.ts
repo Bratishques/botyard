@@ -4,6 +4,7 @@ import { CustomersModule } from '../customers/customers.module'
 import { DestinationsModule } from '../destinations/destinations.module'
 import { DeploymentUseCases } from './application/deployment-use-cases'
 import { DokployWebhookHandler } from './application/dokploy-webhook-handler'
+import { DriftReconciler } from './application/drift-reconciler'
 import { OperationReconciler } from './application/operation-reconciler'
 import { OperationWorker } from './application/operation-worker'
 import { DEPLOYMENT_REPOSITORY } from './domain/deployment'
@@ -29,7 +30,8 @@ import { DokployWebhookController } from './presentation/dokploy-webhook.control
     OperationWorker,
     OperationReconciler,
     DokployWebhookHandler,
+    DriftReconciler,
   ],
-  exports: [DeploymentUseCases, OperationWorker, OperationReconciler],
+  exports: [DeploymentUseCases, OperationWorker, OperationReconciler, DriftReconciler],
 })
 export class DeploymentsModule {}

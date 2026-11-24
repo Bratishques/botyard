@@ -58,6 +58,11 @@ export interface DeploymentPlatform {
   stop(target: PlatformTarget, appId: string): Promise<void>
   /** Удалить; приложения уже нет — тоже успех */
   deleteApp(target: PlatformTarget, appId: string): Promise<void>
+  /**
+   * Состояние приложения в Dokploy: `idle` (остановлено), `running` (идёт сборка), `done` (развёрнуто или
+   * запущено), `error` (сборка упала); `missing` — приложения нет. Работает ли сам контейнер, отсюда не видно
+   */
+  appStatus(target: PlatformTarget, appId: string): Promise<string>
 }
 
 export const DEPLOYMENT_PLATFORM = Symbol('DEPLOYMENT_PLATFORM')

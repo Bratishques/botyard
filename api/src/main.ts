@@ -3,6 +3,7 @@ import { NestFactory } from '@nestjs/core'
 import type { NestExpressApplication } from '@nestjs/platform-express'
 import { Logger } from 'nestjs-pino'
 import { AppModule } from './app.module'
+import { DriftReconciler } from './modules/deployments/application/drift-reconciler'
 import { OperationReconciler } from './modules/deployments/application/operation-reconciler'
 import { OperationWorker } from './modules/deployments/application/operation-worker'
 import { OperationStepConsumer } from './modules/deployments/presentation/operation-step.consumer'
@@ -142,6 +143,7 @@ async function startReconciler(config: AppConfig): Promise<void> {
   app.useLogger(app.get(Logger))
   const operations = app.get(OperationReconciler)
   const housekeeping = app.get(Housekeeping)
+  const drift = app.get(DriftReconciler)
   logger.info({ intervalMs: RECONCILE_INTERVAL_MS }, 'reconciler started')
 
   while (!stopping) {
@@ -151,6 +153,12 @@ async function startReconciler(config: AppConfig): Promise<void> {
       if (woken.kicked + woken.abandoned > 0) logger.info(woken, 'stalled operations reconciled')
     } catch (error) {
       logger.error({ err: error }, 'reconciling operations failed')
+    }
+    try {
+      const checked = await drift.tick()
+      if (checked.changed > 0) logger.info(checked, 'deployment drift changed')
+    } catch (error) {
+      logger.error({ err: error }, 'drift check failed')
     }
     try {
       const purged = await housekeeping.tick()

@@ -2,7 +2,15 @@ import { Injectable } from '@nestjs/common'
 import { type Selectable, sql } from 'kysely'
 import type { BotDeploymentTable, OperationTable } from '../../../shared/database/schema'
 import { UnitOfWork } from '../../../shared/database/unit-of-work'
-import type { Deployment, DeploymentBasis, DeploymentRepository, DeploymentStatus, Operation, OperationKind } from '../domain/deployment'
+import type {
+  Deployment,
+  DeploymentBasis,
+  DeploymentDrift,
+  DeploymentRepository,
+  DeploymentStatus,
+  Operation,
+  OperationKind,
+} from '../domain/deployment'
 import { firstStep } from '../domain/saga'
 
 const DEPLOYMENT_COLUMNS = [
@@ -18,6 +26,8 @@ const DEPLOYMENT_COLUMNS = [
   'dokploy_app_id',
   'active_operation_id',
   'last_error',
+  'drift',
+  'drift_checked_at',
   'version',
   'created_at',
   'updated_at',
@@ -91,6 +101,46 @@ export class PostgresDeploymentRepository implements DeploymentRepository {
     }
   }
 
+  async dueForDriftCheck(intervalMs: number, limit: number): Promise<Deployment[]> {
+    const rows = await this.unitOfWork
+      .db()
+      .selectFrom('bot_deployment')
+      .innerJoin('destination', 'destination.id', 'bot_deployment.destination_id')
+      .select(DEPLOYMENT_COLUMNS.map((column) => `bot_deployment.${column}` as const))
+      .where('bot_deployment.active_operation_id', 'is', null)
+      .where('bot_deployment.status', 'in', ['RUNNING', 'STOPPED', 'FAILED'])
+      .where('bot_deployment.dokploy_app_id', 'is not', null)
+      .where('destination.status', '<>', 'DISABLED')
+      .where((where) =>
+        where.or([
+          where('bot_deployment.drift_checked_at', 'is', null),
+          where('bot_deployment.drift_checked_at', '<', sql<Date>`now() - make_interval(secs => ${intervalMs / 1000})`),
+        ]),
+      )
+      .orderBy(sql`bot_deployment.drift_checked_at NULLS FIRST`)
+      .limit(limit)
+      .execute()
+
+    return rows.map(toDeployment)
+  }
+
+  async recordDrift(
+    id: string,
+    version: number,
+    drift: DeploymentDrift | null | undefined,
+  ): Promise<{ previous: DeploymentDrift | null } | false> {
+    const result = await sql<{ previous: DeploymentDrift | null }>`
+      UPDATE bot_deployment d
+      SET drift_checked_at = now()${drift === undefined ? sql`` : sql`, drift = ${drift}`}
+      FROM (SELECT id, drift FROM bot_deployment WHERE id = ${id} FOR UPDATE) old
+      WHERE d.id = old.id AND d.version = ${version} AND d.active_operation_id IS NULL
+      RETURNING old.drift AS previous
+    `.execute(this.unitOfWork.db())
+    const [row] = result.rows
+
+    return row ? { previous: row.previous } : false
+  }
+
   async lockDestinationStatus(destinationId: string): Promise<string | null> {
     const row = await this.unitOfWork
       .db()
@@ -103,7 +153,9 @@ export class PostgresDeploymentRepository implements DeploymentRepository {
     return row?.status ?? null
   }
 
-  async insert(deployment: Omit<Deployment, 'version' | 'createdAt' | 'updatedAt' | 'dokployAppId' | 'lastError'>): Promise<Deployment> {
+  async insert(
+    deployment: Omit<Deployment, 'version' | 'createdAt' | 'updatedAt' | 'dokployAppId' | 'lastError' | 'drift' | 'driftCheckedAt'>,
+  ): Promise<Deployment> {
     const row = await this.unitOfWork
       .db()
       .insertInto('bot_deployment')
@@ -207,6 +259,8 @@ function toDeployment(row: Selectable<BotDeploymentTable>): Deployment {
     dokployAppId: row.dokploy_app_id,
     activeOperationId: row.active_operation_id,
     lastError: row.last_error,
+    drift: row.drift,
+    driftCheckedAt: row.drift_checked_at,
     version: row.version,
     createdAt: row.created_at,
     updatedAt: row.updated_at,

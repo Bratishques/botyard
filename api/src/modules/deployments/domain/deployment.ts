@@ -5,6 +5,33 @@ export type OperationKind = 'PROVISION' | 'START' | 'STOP' | 'REDEPLOY' | 'DELET
 export type OperationStatus = 'PENDING' | 'RUNNING' | 'SUCCEEDED' | 'FAILED'
 
 /**
+ * Расхождение с Dokploy, замеченное reconciler'ом: робота остановили, запустили или удалили руками в Dokploy,
+ * или его передеплой там упал. Наблюдение, а не статус — оператор решает, что делать
+ */
+export type DeploymentDrift = 'APP_MISSING' | 'STOPPED_IN_DOKPLOY' | 'RUNNING_IN_DOKPLOY' | 'FAILED_IN_DOKPLOY'
+
+/**
+ * Дрейф по статусу развёртывания и состоянию приложения в Dokploy (`appStatus`). `undefined` — вывода нет
+ * (идёт сборка, незнакомое состояние): прежнее наблюдение остаётся. Правила — по поведению Dokploy v0.31.4:
+ * stop ставит `idle`, успешный start и деплой — `done`, упавшая сборка — `error`
+ */
+export function driftOf(status: DeploymentStatus, appStatus: string): DeploymentDrift | null | undefined {
+  if (appStatus === 'missing') return 'APP_MISSING'
+  if (appStatus === 'running') return undefined
+  if (status === 'RUNNING') {
+    if (appStatus === 'idle') return 'STOPPED_IN_DOKPLOY'
+    if (appStatus === 'error') return 'FAILED_IN_DOKPLOY'
+    return appStatus === 'done' ? null : undefined
+  }
+  if (status === 'STOPPED') {
+    if (appStatus === 'done') return 'RUNNING_IN_DOKPLOY'
+    return appStatus === 'idle' || appStatus === 'error' ? null : undefined
+  }
+  // FAILED: у Dokploy своя правда об упавшем; расхождение — только если приложения нет
+  return null
+}
+
+/**
  * Развёртывание — робот конкретного клиента на конкретном назначении из конкретной версии шаблона.
  *
  *            provision                 deploy ok
@@ -35,6 +62,8 @@ export interface Deployment {
   readonly dokployAppId: string | null
   readonly activeOperationId: string | null
   readonly lastError: string | null
+  readonly drift: DeploymentDrift | null
+  readonly driftCheckedAt: Date | null
   readonly version: number
   readonly createdAt: Date
   readonly updatedAt: Date
@@ -123,7 +152,9 @@ export interface DeploymentBasis {
 export interface DeploymentRepository {
   /** Клиент, назначение и шаблон под `FOR SHARE`: архивация, смена режима и выключение ждут конца создания */
   lockBasis(customerId: string, destinationId: string, templateId: string): Promise<DeploymentBasis>
-  insert(deployment: Omit<Deployment, 'version' | 'createdAt' | 'updatedAt' | 'dokployAppId' | 'lastError'>): Promise<Deployment>
+  insert(
+    deployment: Omit<Deployment, 'version' | 'createdAt' | 'updatedAt' | 'dokployAppId' | 'lastError' | 'drift' | 'driftCheckedAt'>,
+  ): Promise<Deployment>
   insertOperation(operation: { id: string; deploymentId: string; kind: OperationKind; requestedBy: string }): Promise<Operation>
   findById(id: string): Promise<Deployment | null>
   list(): Promise<Deployment[]>
@@ -139,6 +170,18 @@ export interface DeploymentRepository {
     from: readonly DeploymentStatus[],
     claimAs: DeploymentStatus | null,
   ): Promise<Deployment | null>
+  /**
+   * Развёртывания для сверки дрейфа: без активной операции, в RUNNING, STOPPED или FAILED, на невыключенном
+   * назначении, не сверявшиеся дольше `intervalMs` (никогда — первыми)
+   */
+  dueForDriftCheck(intervalMs: number, limit: number): Promise<Deployment[]>
+  /**
+   * Записать итог сверки: `drift` (`undefined` — вывода нет, прежнее наблюдение остаётся) и время. Условно:
+   * версия та же и операции нет — начатая оператором операция важнее наблюдения. Версию не поднимает: это
+   * наблюдение, а не правка, и оно не должно ломать оператору условную запись. Возвращает прежнее значение
+   * дрейфа или `false`, если запись не прошла
+   */
+  recordDrift(id: string, version: number, drift: DeploymentDrift | null | undefined): Promise<{ previous: DeploymentDrift | null } | false>
   /** Статус назначения под `FOR SHARE`: выключение ждёт конца транзакции, а не проскакивает мимо */
   lockDestinationStatus(destinationId: string): Promise<string | null>
 }
