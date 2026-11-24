@@ -13,7 +13,7 @@
 - Адаптер Dokploy: `project.all`, `environment` (проверка ключа при добавлении), retry с jitter,
   circuit breaker и таймаут на каждое назначение.
 - CRUD назначений в админ-API, вход оператора (сессия в cookie).
-- CI: lint, typecheck, unit и интеграционные тесты (Testcontainers).
+- CI: lint, typecheck, unit и интеграционные тесты (сервисы Postgres и RabbitMQ в CI).
 
 ## Этап 2. Клиенты, шаблоны, сага
 - Миграции: `customer`, `bot_template`, `bot_deployment`, `operation`, `outbox_message`.

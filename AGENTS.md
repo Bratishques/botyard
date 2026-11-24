@@ -51,13 +51,28 @@ test/                интеграционные тесты (Testcontainers) и
 ## Тесты
 
 - Доменные правила и машина состояний — unit-тесты без БД.
-- Сценарии с состоянием — интеграционные тесты на настоящем Postgres (Testcontainers), не на моках репозиториев.
+- Unit-тесты лежат рядом с кодом: `src/**/*.test.ts`.
+- Сценарии с состоянием — интеграционные тесты в `test/integration` на настоящем Postgres из `../infra`
+  (отдельная база `botyard_test`), не на моках репозиториев.
 - Клиент Dokploy — контрактные тесты на записанных ответах живого инстанса (`test/fixtures/dokploy`).
 - Новый баг сначала воспроизводится падающим тестом.
 
 ## Команды
 
-Появятся на этапе 1, после генерации каркаса. Окружение для разработки — `../infra/docker-compose.dev.yml`.
+Bun — единственный инструмент: рантайм, пакеты, тесты. Node.js не нужен.
+
+```bash
+docker compose -f ../infra/docker-compose.dev.yml up -d --wait   # Postgres, RabbitMQ, Redis
+cp .env.example .env
+bun install
+bun run dev          # api с перезапуском на правки
+bun run check        # biome + tsc + unit-тесты — перед каждым коммитом
+bun run test:int     # интеграционные тесты, нужен запущенный infra
+bun run format       # автоисправление стиля и порядка импортов
+```
+
+Импорты классов-провайдеров Nest — обычные, не `import type`: иначе DI теряет метаданные конструктора.
+Поэтому правило `useImportType` в Biome выключено.
 
 ## Git
 

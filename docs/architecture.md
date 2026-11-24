@@ -131,11 +131,13 @@ Botyard разворачивает торговых роботов T-Invest API 
 
 | Часть | Выбор | Почему |
 |---|---|---|
-| API | Node.js 22 LTS, NestJS 11, TypeScript strict | Модули и DI под гексагональную раскладку |
+| Среда выполнения | Bun — везде: api, админка, скрипты, CI | Один инструмент: рантайм, пакеты, тесты |
+| API | NestJS 12, TypeScript strict | Модули и DI под гексагональную раскладку |
 | БД | PostgreSQL 17, Kysely + миграции на SQL | Явный SQL для условных записей, типы без ORM-магии |
 | Очередь | RabbitMQ 4, transactional outbox | Брокер и outbox — предмет демонстрации |
 | Кеш, pub/sub логов | Redis 7 | Раздача логов SSE между репликами `http` |
-| Тесты | Vitest, Testcontainers, заглушка Dokploy (msw) | Интеграционные тесты на настоящем Postgres и RabbitMQ |
+| Тесты | `bun test`; интеграционные — на Postgres и RabbitMQ из `infra`, отдельная тестовая БД; заглушка Dokploy на `Bun.serve` | Интеграционные тесты на настоящих зависимостях, без моков репозиториев |
+| Линтер и формат | Biome | Одна утилита вместо ESLint и Prettier |
 | Админка | React 19, Vite, TanStack Query и Router | SPA без SSR, нужна только операторам |
 | Наблюдаемость | pino (JSON), Prometheus `/metrics`, `/health/live` и `/health/ready` | — |
 
