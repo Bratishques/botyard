@@ -52,6 +52,15 @@ export const OUTCOME: Readonly<Record<OperationKind, { readonly succeeded: Deplo
 }
 
 /**
+ * Шаги, исход которых может решаться в Dokploy уже без нас: деплой поставлен в очередь или идёт, start мог
+ * дойти до `docker service scale`. Закрыть такую операцию рано — соврать: робот соберётся и запустится.
+ * Reconciler будит их дольше (свой предел пинков — за пределами 30-минутного дедлайна деплоя в воркере) и
+ * закрывает с текстом «состояние в Dokploy неизвестно» — только если воркер так и не довёл шаг (например,
+ * падает на нём раз за разом)
+ */
+export const OUTCOME_IN_DOKPLOY: ReadonlySet<SagaStep> = new Set([SagaStep.DEPLOY, SagaStep.AWAIT_DEPLOY, SagaStep.START])
+
+/**
  * Шаги, которым нужно включённое назначение: всё, что ведёт к запуску робота, до самого запуска. После
  * `deploy` деплой уже идёт в Dokploy — отказ на `await_deploy` назвал бы операцию упавшей, а робот бы
  * запустился. Остановка и удаление разрешены на выключенном назначении всегда.
@@ -107,10 +116,13 @@ export const RETRY = {
   deployDeadlineMs: 30 * 60_000,
 } as const
 
-/** Пауза перед повтором: экспонента с полным jitter, не меньше Retry-After */
+/**
+ * Пауза перед повтором: экспонента с полным jitter, не меньше Retry-After — но не больше `maxDelayMs`. Длиннее
+ * пауз не бывает: на этом держится порог reconciler'а (операция без движения дольше него — застряла)
+ */
 export function retryDelayMs(attempt: number, random: () => number = Math.random, retryAfterMs?: number): number {
   const ceiling = Math.min(RETRY.maxDelayMs, RETRY.baseMs * 2 ** Math.max(0, attempt - 1))
   const jittered = Math.round(random() * ceiling)
 
-  return Math.max(jittered, retryAfterMs ?? 0)
+  return Math.min(RETRY.maxDelayMs, Math.max(jittered, retryAfterMs ?? 0))
 }

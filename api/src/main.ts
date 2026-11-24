@@ -3,10 +3,12 @@ import { NestFactory } from '@nestjs/core'
 import type { NestExpressApplication } from '@nestjs/platform-express'
 import { Logger } from 'nestjs-pino'
 import { AppModule } from './app.module'
+import { OperationReconciler } from './modules/deployments/application/operation-reconciler'
 import { OperationWorker } from './modules/deployments/application/operation-worker'
 import { OperationStepConsumer } from './modules/deployments/presentation/operation-step.consumer'
 import { type AppConfig, loadConfig, ProcessRole } from './shared/config/config'
 import { createDb } from './shared/database/database'
+import { Housekeeping } from './shared/housekeeping/housekeeping'
 import { HttpExceptionFilter } from './shared/http/http-exception.filter'
 import { connectBroker } from './shared/messaging/rabbitmq'
 import { createProcessLogger } from './shared/observability/logger'
@@ -27,6 +29,8 @@ async function main(): Promise<void> {
       return startRelay(config)
     case ProcessRole.WORKER:
       return startWorker(config)
+    case ProcessRole.RECONCILER:
+      return startReconciler(config)
     default:
       throw new Error(`process role ${config.PROCESS_ROLE} is not implemented yet`)
   }
@@ -112,6 +116,60 @@ async function startWorker(config: AppConfig): Promise<void> {
     logger.info('saga worker stopped')
   }
   await broker.close()
+  await app.close()
+}
+
+/**
+ * Reconciler: раз в `RECONCILE_INTERVAL_MS` будит застрявшие операции и чистит служебные таблицы. Брокер ему не
+ * нужен — команды он пишет в outbox. Сбой прохода — в лог, следующий проход по расписанию; SIGTERM — дождаться
+ * текущего прохода.
+ */
+const RECONCILE_INTERVAL_MS = 30_000
+
+async function startReconciler(config: AppConfig): Promise<void> {
+  const logger = createProcessLogger(config, 'reconciler')
+  // Сигналы — до старта приложения: SIGTERM во время инициализации завершает процесс штатно, а не убивает его
+  let stopping = false
+  let wake: () => void = () => {}
+  const stop = () => {
+    stopping = true
+    wake()
+  }
+  process.once('SIGTERM', stop)
+  process.once('SIGINT', stop)
+
+  const app = await NestFactory.createApplicationContext(AppModule.forRoot(config), { bufferLogs: true })
+  app.useLogger(app.get(Logger))
+  const operations = app.get(OperationReconciler)
+  const housekeeping = app.get(Housekeeping)
+  logger.info({ intervalMs: RECONCILE_INTERVAL_MS }, 'reconciler started')
+
+  while (!stopping) {
+    // Две независимые части прохода: сбой одной не отменяет другую
+    try {
+      const woken = await operations.tick()
+      if (woken.kicked + woken.abandoned > 0) logger.info(woken, 'stalled operations reconciled')
+    } catch (error) {
+      logger.error({ err: error }, 'reconciling operations failed')
+    }
+    try {
+      const purged = await housekeeping.tick()
+      if (purged.outbox + purged.idempotency > 0) logger.info({ purged }, 'service tables purged')
+    } catch (error) {
+      logger.error({ err: error }, 'housekeeping failed')
+    }
+    // Пауза до следующего прохода; SIGTERM обрывает её сразу — иначе таймер держал бы процесс до 30 с,
+    // а оркестратор через 10 с прибивает его SIGKILL
+    await new Promise<void>((resolve) => {
+      const timer = setTimeout(resolve, RECONCILE_INTERVAL_MS)
+      wake = () => {
+        clearTimeout(timer)
+        resolve()
+      }
+      if (stopping) wake()
+    })
+  }
+  logger.info('reconciler stopped')
   await app.close()
 }
 

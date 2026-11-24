@@ -1,7 +1,8 @@
 import { Injectable } from '@nestjs/common'
 import { sql } from 'kysely'
 import { UnitOfWork } from '../../../shared/database/unit-of-work'
-import type { ClaimedStep, ClaimRefusal, Finish, OperationStore } from '../domain/operation-store'
+import { OutboxTopic } from '../../../shared/outbox/outbox'
+import type { ClaimedStep, ClaimRefusal, Finish, OperationStore, StalledOperation } from '../domain/operation-store'
 import { isSagaStep, type SagaStep } from '../domain/saga'
 
 /**
@@ -73,7 +74,8 @@ export class PostgresOperationStore implements OperationStore {
 
   async advance(claimed: ClaimedStep, next: SagaStep, context: Record<string, unknown>, dokployAppId?: string): Promise<boolean> {
     return this.unitOfWork.run(async () => {
-      const { wakeNonce: _wake, ...rest } = context
+      // Шаг продвинулся: метка пробуждения и счётчик пинков reconciler'а относятся к прошлому шагу
+      const { wakeNonce: _wake, kicks: _kicks, ...rest } = context
       const moved = await this.held(claimed)
         .set({ step: next, attempt: 0, lease_until: null, context: JSON.stringify(rest), updated_at: sql<Date>`now()` })
         .executeTakeFirst()
@@ -93,7 +95,9 @@ export class PostgresOperationStore implements OperationStore {
     const released = await this.held(claimed)
       .set({
         lease_until: null,
-        context: JSON.stringify({ ...context, wakeNonce: wake }),
+        // Счётчик пинков — из строки, а не из снимка воркера: опоздавший воркер не должен его стереть
+        context: sql<string>`${JSON.stringify({ ...context, wakeNonce: wake })}::jsonb
+          || CASE WHEN operation.context ? 'kicks' THEN jsonb_build_object('kicks', operation.context->'kicks') ELSE '{}'::jsonb END`,
         updated_at: sql<Date>`now()`,
         ...(options.resetAttempts && { attempt: 0 }),
       })
@@ -132,6 +136,94 @@ export class PostgresOperationStore implements OperationStore {
 
       return true
     })
+  }
+
+  async stalled(idleMs: number, limit: number): Promise<StalledOperation[]> {
+    const rows = await this.unitOfWork
+      .db()
+      .selectFrom('operation')
+      .select(['id', 'deployment_id', 'kind', 'step', sql<number>`coalesce((context->>'kicks')::int, 0)`.as('kicks')])
+      .where('status', 'in', ['PENDING', 'RUNNING'])
+      .where((where) => where.or([where('lease_until', 'is', null), where('lease_until', '<', sql<Date>`now()`)]))
+      .where('updated_at', '<', sql<Date>`now() - make_interval(secs => ${idleMs / 1000})`)
+      // Команда ещё лежит в outbox (relay стоит или публикация отложена) — не потеряна, а в заторе:
+      // будить нечего, лишний пинок только добавил бы ещё одну команду в тот же затор
+      .where(({ not, exists, selectFrom }) =>
+        not(
+          exists(
+            selectFrom('outbox_message')
+              .select(sql`1`.as('one'))
+              .where('published_at', 'is', null)
+              .where('topic', '=', OutboxTopic.OPERATION_STEP)
+              .whereRef(sql`outbox_message.payload->>'operationId'`, '=', sql`operation.id::text`),
+          ),
+        ),
+      )
+      .orderBy('updated_at')
+      .limit(limit)
+      .execute()
+
+    return rows.flatMap((row) =>
+      row.step && isSagaStep(row.step)
+        ? [{ operationId: row.id, deploymentId: row.deployment_id, kind: row.kind, step: row.step, kicks: row.kicks }]
+        : [],
+    )
+  }
+
+  async kick(stalled: StalledOperation, wake: string, idleMs: number): Promise<boolean> {
+    const kicked = await this.stillStalled(stalled, idleMs)
+      .set({
+        context: sql<string>`context || jsonb_build_object('wakeNonce', ${wake}::text, 'kicks', ${stalled.kicks + 1}::int)`,
+        lease_until: null,
+        updated_at: sql<Date>`now()`,
+      })
+      .executeTakeFirst()
+
+    return Number(kicked.numUpdatedRows) > 0
+  }
+
+  async abandon(stalled: StalledOperation, finish: Finish, idleMs: number): Promise<boolean> {
+    return this.unitOfWork.run(async () => {
+      const abandoned = await this.stillStalled(stalled, idleMs)
+        .set({
+          status: finish.operation,
+          error: finish.error,
+          lease_until: null,
+          finished_at: sql<Date>`now()`,
+          updated_at: sql<Date>`now()`,
+        })
+        .executeTakeFirst()
+      if (Number(abandoned.numUpdatedRows) === 0) return false
+
+      await this.unitOfWork
+        .db()
+        .updateTable('bot_deployment')
+        .set({
+          status: finish.deploymentStatus,
+          last_error: finish.error,
+          active_operation_id: null,
+          version: sql<number>`version + 1`,
+          updated_at: sql<Date>`now()`,
+        })
+        .where('id', '=', stalled.deploymentId)
+        .where('active_operation_id', '=', stalled.operationId)
+        .execute()
+
+      return true
+    })
+  }
+
+  /** Условие reconciler'а: тот же шаг, не завершена, аренды нет, без движения, пинков столько же, сколько прочитано */
+  private stillStalled(stalled: StalledOperation, idleMs: number) {
+    return this.unitOfWork
+      .db()
+      .updateTable('operation')
+      .where('id', '=', stalled.operationId)
+      .where('step', '=', stalled.step)
+      .where('status', 'in', ['PENDING', 'RUNNING'])
+      .where((where) => where.or([where('lease_until', 'is', null), where('lease_until', '<', sql<Date>`now()`)]))
+      .where('updated_at', '<', sql<Date>`now() - make_interval(secs => ${idleMs / 1000})`)
+      .where(sql<number>`coalesce((context->>'kicks')::int, 0)`, '=', stalled.kicks)
   }
 
   /** Запись по аренде: та же аренда, тот же шаг, операция идёт */

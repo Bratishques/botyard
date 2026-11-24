@@ -3,6 +3,7 @@ import { CatalogModule } from '../catalog/catalog.module'
 import { CustomersModule } from '../customers/customers.module'
 import { DestinationsModule } from '../destinations/destinations.module'
 import { DeploymentUseCases } from './application/deployment-use-cases'
+import { OperationReconciler } from './application/operation-reconciler'
 import { OperationWorker } from './application/operation-worker'
 import { DEPLOYMENT_REPOSITORY } from './domain/deployment'
 import { DEPLOYMENT_PLATFORM } from './domain/deployment-platform'
@@ -24,7 +25,8 @@ import { DeploymentsController } from './presentation/deployments.controller'
     { provide: CONFIG_RENDERER, useClass: HandlebarsConfigRenderer },
     DeploymentUseCases,
     OperationWorker,
+    OperationReconciler,
   ],
-  exports: [DeploymentUseCases, OperationWorker],
+  exports: [DeploymentUseCases, OperationWorker, OperationReconciler],
 })
 export class DeploymentsModule {}

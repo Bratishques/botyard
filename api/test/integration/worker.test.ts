@@ -7,6 +7,7 @@ import { PostgresCatalogRepository } from '../../src/modules/catalog/infrastruct
 import { CustomerUseCases } from '../../src/modules/customers/application/customer-use-cases'
 import { PostgresCustomerRepository } from '../../src/modules/customers/infrastructure/postgres-customer.repository'
 import { DeploymentUseCases } from '../../src/modules/deployments/application/deployment-use-cases'
+import { OperationReconciler } from '../../src/modules/deployments/application/operation-reconciler'
 import { OperationWorker, type StepMessage } from '../../src/modules/deployments/application/operation-worker'
 import {
   type AppSpec,
@@ -345,6 +346,26 @@ describe('воркер саги: provision', () => {
     expect(result.operation.status).toBe('FAILED')
   })
 
+  test('Retry-After от Dokploy длиннее 5 минут — повтор не позже чем через 5 минут (порог reconciler больше)', async () => {
+    const platform = new FakePlatform()
+    platform.failBefore.set('findApps', new PlatformError(true, 'dokploy application.search: 429', 15 * 60_000))
+    const { operation } = await provision()
+    const [first] = await pending(operation.id)
+    if (!first) throw new Error('no command')
+    await db.updateTable('outbox_message').set({ published_at: new Date() }).where('id', '=', first.id).execute()
+
+    await workerWith(platform).handle(first.message)
+
+    const retry = await db
+      .selectFrom('outbox_message')
+      .select(sql<number>`extract(epoch from available_at - created_at)`.as('delay'))
+      .where(sql<boolean>`payload->>'operationId' = ${operation.id}`)
+      .where('published_at', 'is', null)
+      .executeTakeFirstOrThrow()
+    expect(Number(retry.delay)).toBeLessThanOrEqual(5 * 60 + 1)
+    expect(Number(retry.delay)).toBeGreaterThanOrEqual(15)
+  })
+
   test('ключ Dokploy не принят — отказ без повторов; временная ошибка — повторы до предела', async () => {
     const rejected = new FakePlatform()
     rejected.failBefore.set('findApps', new PlatformError(false, 'dokploy application.search: 401 Unauthorized'))
@@ -662,5 +683,158 @@ describe('воркер саги: гонки и повторная доставк
 
     expect(platform.calls.length).toBe(calls)
     expect(await pending(operation.id)).toEqual([])
+  })
+})
+
+describe('reconciler застрявших операций', () => {
+  const reconciler = new OperationReconciler(store, unitOfWork, outbox, audit)
+  /** Команда потеряна: сообщения в outbox нет, операция без движения дольше порога */
+  async function loseCommand(operationId: string, minutesAgo = 11) {
+    await db.deleteFrom('outbox_message').where(sql<boolean>`payload->>'operationId' = ${operationId}`).execute()
+    await sql`UPDATE operation SET updated_at = now() - make_interval(mins => ${minutesAgo}) WHERE id = ${operationId}`.execute(db)
+  }
+
+  test('потерянная команда: пинок с новой меткой — операция доходит до конца, старая команда устарела', async () => {
+    const platform = new FakePlatform()
+    const { deployment, operation } = await provision()
+    const original: StepMessage = { operationId: operation.id, deploymentId: deployment.id, kind: 'PROVISION', step: 'ensure_app' }
+    await loseCommand(operation.id)
+
+    const result = await reconciler.tick()
+    expect(result.kicked).toBeGreaterThanOrEqual(1)
+    const [command] = await pending(operation.id)
+    expect(command?.message).toMatchObject({ step: 'ensure_app', wake: expect.any(String) })
+
+    await workerWith(platform).handle(original) // старая команда всё-таки доехала
+    expect(platform.calls).toEqual([])
+    await drive(workerWith(platform), operation.id)
+    expect((await state(deployment.id, operation.id)).deployment.status).toBe('RUNNING')
+    const context = await db.selectFrom('operation').select('context').where('id', '=', operation.id).executeTakeFirstOrThrow()
+    expect(context.context).not.toHaveProperty('kicks')
+  })
+
+  test('операцию с живой арендой или недавним движением не трогает', async () => {
+    const busy = await provision()
+    await loseCommand(busy.operation.id)
+    await sql`UPDATE operation SET status = 'RUNNING', lease_until = now() + interval '1 minute' WHERE id = ${busy.operation.id}`.execute(
+      db,
+    )
+    const fresh = await provision()
+    await loseCommand(fresh.operation.id, 1)
+
+    await reconciler.tick()
+
+    expect(await pending(busy.operation.id)).toEqual([])
+    expect(await pending(fresh.operation.id)).toEqual([])
+  })
+
+  test('после трёх пинков без прогресса — FAILED с причиной, захват снят, аудит от reconciler', async () => {
+    const { deployment, operation } = await provision()
+    await loseCommand(operation.id)
+    await sql`UPDATE operation SET context = context || '{"kicks": 3}'::jsonb WHERE id = ${operation.id}`.execute(db)
+
+    const result = await reconciler.tick()
+
+    expect(result.abandoned).toBeGreaterThanOrEqual(1)
+    const after = await state(deployment.id, operation.id)
+    expect(after.operation).toMatchObject({ status: 'FAILED' })
+    expect(after.operation.error).toContain('no progress on step ensure_app after 3 restarts')
+    expect(after.deployment).toMatchObject({ status: 'FAILED', active_operation_id: null })
+    const events = await db.selectFrom('audit_event').select(['actor', 'action']).where('target_id', '=', deployment.id).execute()
+    expect(events).toContainEqual({ actor: 'system:reconciler', action: 'deployment.provision_failed' })
+  })
+
+  test('гонка: воркер взял шаг между чтением и пинком — пинок не проходит, команда не дублируется', async () => {
+    const { operation } = await provision()
+    await loseCommand(operation.id)
+    const [stalled] = (await store.stalled(10 * 60_000, 500)).filter((item) => item.operationId === operation.id)
+    if (!stalled) throw new Error('not stalled')
+
+    const claimed = await store.claim(operation.id, 'ensure_app', null, 60_000)
+    expect('reason' in claimed).toBe(false)
+
+    expect(await store.kick(stalled, 'late-wake', 10 * 60_000)).toBe(false)
+    expect(await store.abandon(stalled, { operation: 'FAILED', error: 'late', deploymentStatus: 'FAILED' }, 10 * 60_000)).toBe(false)
+  })
+
+  test('команда в заторе outbox (relay стоит) — операция не застряла, не будится', async () => {
+    const { operation } = await provision()
+    // Команда не потеряна: лежит неопубликованной, операция давно без движения
+    await sql`UPDATE operation SET updated_at = now() - interval '40 minutes' WHERE id = ${operation.id}`.execute(db)
+
+    await reconciler.tick()
+
+    expect(await pending(operation.id)).toHaveLength(1)
+    const row = await db.selectFrom('operation').select('context').where('id', '=', operation.id).executeTakeFirstOrThrow()
+    expect(row.context).not.toHaveProperty('kicks')
+  })
+
+  test('деплой уже идёт в Dokploy — после всех пинков не FAILED, а снова пинок', async () => {
+    const { deployment, operation } = await provision()
+    await loseCommand(operation.id)
+    await sql`UPDATE operation SET step = 'await_deploy', context = '{"kicks": 3, "baselineDeploymentId": null, "deployRequestedAt": "2026-11-24T00:00:00Z"}'::jsonb WHERE id = ${operation.id}`.execute(
+      db,
+    )
+
+    const result = await reconciler.tick()
+
+    expect(result.abandoned).toBe(0)
+    expect((await state(deployment.id, operation.id)).operation.status).not.toBe('FAILED')
+    expect((await pending(operation.id)).map((item) => item.message.step)).toEqual(['await_deploy'])
+  })
+
+  test('деплой и после шести пинков не доведён (воркер падает на шаге) — FAILED: состояние в Dokploy неизвестно', async () => {
+    const { deployment, operation } = await provision()
+    await loseCommand(operation.id)
+    await sql`UPDATE operation SET step = 'await_deploy', context = '{"kicks": 6, "baselineDeploymentId": null, "deployRequestedAt": "2026-11-24T00:00:00Z"}'::jsonb WHERE id = ${operation.id}`.execute(
+      db,
+    )
+
+    const result = await reconciler.tick()
+
+    expect(result.abandoned).toBeGreaterThanOrEqual(1)
+    const after = await state(deployment.id, operation.id)
+    expect(after.operation.status).toBe('FAILED')
+    expect(after.operation.error).toContain('state in Dokploy is unknown')
+    expect(after.deployment.active_operation_id).toBeNull()
+  })
+
+  test('опоздавший release воркера не стирает счётчик пинков', async () => {
+    const { operation } = await provision()
+    const claimed = await store.claim(operation.id, 'ensure_app', null, 60_000)
+    if ('reason' in claimed) throw new Error('not claimed')
+    await sql`UPDATE operation SET context = context || '{"kicks": 2}'::jsonb WHERE id = ${operation.id}`.execute(db)
+
+    expect(await store.release(claimed, { ...claimed.context }, 'wake-x', { resetAttempts: false })).toBe(true)
+
+    const row = await db.selectFrom('operation').select('context').where('id', '=', operation.id).executeTakeFirstOrThrow()
+    expect(row.context).toMatchObject({ kicks: 2, wakeNonce: 'wake-x' })
+  })
+
+  test('гонка: воркер отпустил шаг на повтор между чтением и пинком — пинок не перебивает его паузу', async () => {
+    const { operation } = await provision()
+    await loseCommand(operation.id)
+    const [stalled] = (await store.stalled(10 * 60_000, 500)).filter((item) => item.operationId === operation.id)
+    if (!stalled) throw new Error('not stalled')
+
+    // Воркер взял шаг и тут же отпустил его на повтор с паузой: аренды нет, пинков столько же, но движение свежее
+    const claimed = await store.claim(operation.id, 'ensure_app', null, 60_000)
+    if ('reason' in claimed) throw new Error('not claimed')
+    expect(await store.release(claimed, {}, 'worker-wake', { resetAttempts: false })).toBe(true)
+
+    expect(await store.kick(stalled, 'late-wake', 10 * 60_000)).toBe(false)
+    const row = await db.selectFrom('operation').select('context').where('id', '=', operation.id).executeTakeFirstOrThrow()
+    expect(row.context).toMatchObject({ wakeNonce: 'worker-wake' })
+  })
+
+  test('два reconciler одновременно — одна операция будится один раз', async () => {
+    const { operation } = await provision()
+    await loseCommand(operation.id)
+
+    await Promise.all([reconciler.tick(), new OperationReconciler(store, unitOfWork, outbox, audit).tick()])
+
+    expect(await pending(operation.id)).toHaveLength(1)
+    const row = await db.selectFrom('operation').select('context').where('id', '=', operation.id).executeTakeFirstOrThrow()
+    expect(row.context).toMatchObject({ kicks: 1 })
   })
 })
