@@ -125,6 +125,8 @@ export interface OperationTable {
   attempt: Generated<number>
   error: string | null
   requested_by: string
+  lease_until: Date | null
+  context: ColumnType<Record<string, unknown>, string | undefined, string>
   created_at: CreatedAt
   updated_at: UpdatedAt
   finished_at: Date | null
@@ -134,6 +136,7 @@ export interface OutboxMessageTable {
   id: string
   topic: string
   payload: ColumnType<Record<string, unknown>, string, never>
+  available_at: ColumnType<Date, Date | undefined, never>
   created_at: CreatedAt
   published_at: Date | null
 }

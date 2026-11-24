@@ -3,6 +3,7 @@ import { type Selectable, sql } from 'kysely'
 import type { BotDeploymentTable, OperationTable } from '../../../shared/database/schema'
 import { UnitOfWork } from '../../../shared/database/unit-of-work'
 import type { Deployment, DeploymentBasis, DeploymentRepository, DeploymentStatus, Operation, OperationKind } from '../domain/deployment'
+import { firstStep } from '../domain/saga'
 
 const DEPLOYMENT_COLUMNS = [
   'id',
@@ -84,6 +85,7 @@ export class PostgresDeploymentRepository implements DeploymentRepository {
               currentVersion: template.current_version,
               retired: template.retired,
               configSchema: version.manifest.config.schema,
+              verifiesTls: version.manifest.security?.verifiesTls === true,
             }
           : null,
     }
@@ -127,7 +129,13 @@ export class PostgresDeploymentRepository implements DeploymentRepository {
     const row = await this.unitOfWork
       .db()
       .insertInto('operation')
-      .values({ id: operation.id, deployment_id: operation.deploymentId, kind: operation.kind, requested_by: operation.requestedBy })
+      .values({
+        id: operation.id,
+        deployment_id: operation.deploymentId,
+        kind: operation.kind,
+        step: firstStep(operation.kind),
+        requested_by: operation.requestedBy,
+      })
       .returning(OPERATION_COLUMNS)
       .executeTakeFirstOrThrow()
 

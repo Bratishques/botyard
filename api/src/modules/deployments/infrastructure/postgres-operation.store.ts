@@ -1,0 +1,146 @@
+import { Injectable } from '@nestjs/common'
+import { sql } from 'kysely'
+import { UnitOfWork } from '../../../shared/database/unit-of-work'
+import type { ClaimedStep, ClaimRefusal, Finish, OperationStore } from '../domain/operation-store'
+import { isSagaStep, type SagaStep } from '../domain/saga'
+
+/**
+ * Операции для воркера саги в Postgres. Аренда — условная запись по шагу и времени аренды; все дальнейшие
+ * записи воркера — по шагу и номеру попытки, полученным при аренде. Время — базы (`now()`), не процесса.
+ */
+@Injectable()
+export class PostgresOperationStore implements OperationStore {
+  constructor(private readonly unitOfWork: UnitOfWork) {}
+
+  async claim(operationId: string, step: SagaStep, wake: string | null, leaseMs: number): Promise<ClaimedStep | ClaimRefusal> {
+    const db = this.unitOfWork.db()
+    const row = await db
+      .updateTable('operation')
+      .set({
+        status: 'RUNNING',
+        attempt: sql<number>`attempt + 1`,
+        lease_until: sql<Date>`now() + make_interval(secs => ${leaseMs / 1000})`,
+        updated_at: sql<Date>`now()`,
+      })
+      .where('id', '=', operationId)
+      .where('step', '=', step)
+      .where('status', 'in', ['PENDING', 'RUNNING'])
+      .where((where) => where.or([where('lease_until', 'is', null), where('lease_until', '<', sql<Date>`now()`)]))
+      .where(sql<string>`coalesce(context->>'wakeNonce', '')`, '=', wake ?? '')
+      .returning(['id', 'deployment_id', 'kind', 'step', 'attempt', 'context'])
+      .executeTakeFirst()
+
+    if (row?.step && isSagaStep(row.step)) {
+      return {
+        operationId: row.id,
+        deploymentId: row.deployment_id,
+        kind: row.kind,
+        step: row.step,
+        attempt: row.attempt,
+        context: row.context,
+      }
+    }
+
+    const current = await db
+      .selectFrom('operation')
+      .select([
+        'status',
+        'step',
+        'lease_until',
+        sql<boolean>`lease_until > now()`.as('leased'),
+        sql<string>`coalesce(context->>'wakeNonce', '')`.as('wake'),
+      ])
+      .where('id', '=', operationId)
+      .executeTakeFirst()
+    const active = current && ['PENDING', 'RUNNING'].includes(current.status) && current.step === step && current.wake === (wake ?? '')
+    if (active && current.leased && current.lease_until) {
+      return { reason: 'leased', until: current.lease_until }
+    }
+
+    return { reason: 'stale' }
+  }
+
+  async advance(claimed: ClaimedStep, next: SagaStep, context: Record<string, unknown>, dokployAppId?: string): Promise<boolean> {
+    return this.unitOfWork.run(async () => {
+      const { wakeNonce: _wake, ...rest } = context
+      const moved = await this.held(claimed)
+        .set({ step: next, attempt: 0, lease_until: null, context: JSON.stringify(rest), updated_at: sql<Date>`now()` })
+        .executeTakeFirst()
+      if (Number(moved.numUpdatedRows) === 0) return false
+      if (dokployAppId !== undefined) await this.setAppId(claimed, dokployAppId)
+
+      return true
+    })
+  }
+
+  async release(
+    claimed: ClaimedStep,
+    context: Record<string, unknown>,
+    wake: string,
+    options: { resetAttempts: boolean },
+  ): Promise<boolean> {
+    const released = await this.held(claimed)
+      .set({
+        lease_until: null,
+        context: JSON.stringify({ ...context, wakeNonce: wake }),
+        updated_at: sql<Date>`now()`,
+        ...(options.resetAttempts && { attempt: 0 }),
+      })
+      .executeTakeFirst()
+
+    return Number(released.numUpdatedRows) > 0
+  }
+
+  async finish(claimed: ClaimedStep, finish: Finish): Promise<boolean> {
+    return this.unitOfWork.run(async () => {
+      const finished = await this.held(claimed)
+        .set({
+          status: finish.operation,
+          error: finish.error,
+          lease_until: null,
+          finished_at: sql<Date>`now()`,
+          updated_at: sql<Date>`now()`,
+        })
+        .executeTakeFirst()
+      if (Number(finished.numUpdatedRows) === 0) return false
+
+      await this.unitOfWork
+        .db()
+        .updateTable('bot_deployment')
+        .set({
+          status: finish.deploymentStatus,
+          last_error: finish.error,
+          active_operation_id: null,
+          version: sql<number>`version + 1`,
+          updated_at: sql<Date>`now()`,
+          ...(finish.dokployAppId !== undefined && { dokploy_app_id: finish.dokployAppId }),
+        })
+        .where('id', '=', claimed.deploymentId)
+        .where('active_operation_id', '=', claimed.operationId)
+        .execute()
+
+      return true
+    })
+  }
+
+  /** Запись по аренде: тот же шаг, та же попытка, операция идёт */
+  private held(claimed: ClaimedStep) {
+    return this.unitOfWork
+      .db()
+      .updateTable('operation')
+      .where('id', '=', claimed.operationId)
+      .where('step', '=', claimed.step)
+      .where('attempt', '=', claimed.attempt)
+      .where('status', '=', 'RUNNING')
+  }
+
+  private async setAppId(claimed: ClaimedStep, dokployAppId: string): Promise<void> {
+    await this.unitOfWork
+      .db()
+      .updateTable('bot_deployment')
+      .set({ dokploy_app_id: dokployAppId, updated_at: sql<Date>`now()` })
+      .where('id', '=', claimed.deploymentId)
+      .where('active_operation_id', '=', claimed.operationId)
+      .execute()
+  }
+}

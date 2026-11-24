@@ -142,9 +142,12 @@ describe('создание развёртывания', () => {
     expect(deployment).toMatchObject({ status: 'PROVISIONING', activeOperationId: operation.id, tradingMode: 'sandbox' })
     expect(deployment.appName).toMatch(/^by-[0-9a-f]{12}$/)
     expect(deployment.config).toMatchObject({ figi: ['BBG004730N88'], strategy: 'gamble', logLevel: 'INFO', sellOnExit: false })
-    expect(operation).toMatchObject({ kind: 'PROVISION', status: 'PENDING' })
+    expect(operation).toMatchObject({ kind: 'PROVISION', status: 'PENDING', step: 'ensure_app' })
     expect(await outboxFor(deployment.id)).toEqual([
-      { topic: 'operation.step', payload: { operationId: operation.id, deploymentId: deployment.id, kind: 'PROVISION' } },
+      {
+        topic: 'operation.step',
+        payload: { operationId: operation.id, deploymentId: deployment.id, kind: 'PROVISION', step: 'ensure_app' },
+      },
     ])
   })
 
@@ -183,6 +186,32 @@ describe('создание развёртывания', () => {
         deployments.create({ customerId, destinationId: await destination(), templateId: 'bita', config: bitaConfig }, 'operator:1'),
       ),
     ).toBe(DeploymentErrorCode.CUSTOMER_UNAVAILABLE)
+  })
+
+  test('робот без проверки TLS у боевого клиента — отказ; в песочнице — можно', async () => {
+    const customerId = await customer()
+    const contest = { instruments: [{ figi: 'BBG004730N88' }] }
+    const sandboxed = await deployments.create(
+      { customerId, destinationId: await destination(), templateId: 'contest-2022', config: contest },
+      'operator:1',
+    )
+    expect(sandboxed.deployment.tradingMode).toBe('sandbox')
+
+    const liveCustomer = await customer()
+    await db.updateTable('customer').set({ sandbox: false }).where('id', '=', liveCustomer).execute()
+    expect(
+      await codeOf(
+        deployments.create(
+          { customerId: liveCustomer, destinationId: await destination(), templateId: 'contest-2022', config: contest },
+          'operator:1',
+        ),
+      ),
+    ).toBe(DeploymentErrorCode.TEMPLATE_NOT_LIVE_SAFE)
+    const bita = await deployments.create(
+      { customerId: liveCustomer, destinationId: await destination(), templateId: 'bita', config: bitaConfig },
+      'operator:1',
+    )
+    expect(bita.deployment.tradingMode).toBe('live')
   })
 
   test('переплетение: назначение выключают, пока идёт создание — создание видит выключенное и отказывает', async () => {

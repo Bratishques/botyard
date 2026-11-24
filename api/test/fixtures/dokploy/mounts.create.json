@@ -1,0 +1,18 @@
+{
+  "mountId": "aMXEcMvu76jG3mE29AV80",
+  "type": "file",
+  "hostPath": null,
+  "volumeName": null,
+  "filePath": "config.toml",
+  "content": "<redacted>",
+  "serviceType": "application",
+  "mountPath": "/opt/x/config.toml",
+  "applicationId": "zJ5ZPnh38ticXmP0nuWgF",
+  "composeId": null,
+  "libsqlId": null,
+  "mariadbId": null,
+  "mongoId": null,
+  "mysqlId": null,
+  "postgresId": null,
+  "redisId": null
+}

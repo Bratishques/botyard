@@ -3,7 +3,7 @@
   "$id": "https://botyard.local/schema/template.schema.json",
   "title": "Botyard bot template",
   "type": "object",
-  "required": ["id", "name", "upstream", "build", "config"],
+  "required": ["id", "name", "upstream", "build", "config", "security"],
   "additionalProperties": false,
   "properties": {
     "$schema": { "type": "string" },
@@ -44,6 +44,17 @@
         { "if": { "properties": { "delivery": { "const": "env" } } }, "then": { "required": ["env"] } },
         { "if": { "properties": { "delivery": { "const": "file" } } }, "then": { "required": ["mountPath", "template"] } }
       ]
+    },
+    "security": {
+      "type": "object",
+      "required": ["verifiesTls"],
+      "additionalProperties": false,
+      "properties": {
+        "verifiesTls": {
+          "type": "boolean",
+          "description": "Проверяет ли робот сертификат T-Invest. false — токен уходит без проверки, боевой режим запрещён"
+        }
+      }
     },
     "metrics": {
       "type": "object",

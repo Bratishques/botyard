@@ -1,0 +1,15 @@
+{
+  "items": [
+    {
+      "applicationId": "zJ5ZPnh38ticXmP0nuWgF",
+      "name": "by-fixture00001",
+      "appName": "by-fixture00001-cey6ry",
+      "description": "Botyard deployment fixture",
+      "environmentId": "s-pYunUJOTOz3qQOEkcG5",
+      "applicationStatus": "error",
+      "sourceType": "git",
+      "createdAt": "2026-11-24T18:01:25.309Z"
+    }
+  ],
+  "total": 1
+}

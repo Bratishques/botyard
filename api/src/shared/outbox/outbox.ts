@@ -1,4 +1,5 @@
 import { Global, Injectable, Module } from '@nestjs/common'
+import { sql } from 'kysely'
 import { UnitOfWork } from '../database/unit-of-work'
 
 /** Темы outbox. Сообщение — команда или событие; полезная нагрузка без секретов */
@@ -17,12 +18,20 @@ export type OutboxTopic = (typeof OutboxTopic)[keyof typeof OutboxTopic]
 export class Outbox {
   constructor(private readonly unitOfWork: UnitOfWork) {}
 
-  async enqueue(topic: OutboxTopic, payload: Record<string, unknown>): Promise<string> {
+  /** `delayMs` — опубликовать не раньше чем через столько: повтор шага с паузой, опрос идущего деплоя */
+  async enqueue(topic: OutboxTopic, payload: Record<string, unknown>, options: { delayMs?: number } = {}): Promise<string> {
     const id = Bun.randomUUIDv7()
+    const delayMs = Math.max(0, Math.round(options.delayMs ?? 0))
     await this.unitOfWork
       .db()
       .insertInto('outbox_message')
-      .values({ id, topic, payload: JSON.stringify(payload) })
+      .values({
+        id,
+        topic,
+        payload: JSON.stringify(payload),
+        // Время базы, а не процесса: relay сравнивает с now() базы, и часы воркера тут не участвуют
+        ...(delayMs > 0 && { available_at: sql<Date>`now() + make_interval(secs => ${delayMs / 1000})` }),
+      })
       .execute()
 
     return id

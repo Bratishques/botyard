@@ -1,0 +1,24 @@
+[
+  {
+    "deploymentId": "ZxoNeqwQ7luSiuXSeBpkp",
+    "title": "Merge pull request #11 from elkopass/dev\n\nVersion 0.1.2",
+    "description": "Commit: 95daeaad2e6ab4aeb81f5866eaa4500d2ce367bf",
+    "status": "error",
+    "logPath": "/etc/dokploy/logs/by-fixture00001-cey6ry/by-fixture00001-cey6ry-2026-11-24:18:01:25.log",
+    "pid": null,
+    "applicationId": "zJ5ZPnh38ticXmP0nuWgF",
+    "composeId": null,
+    "serverId": null,
+    "isPreviewDeployment": false,
+    "previewDeploymentId": null,
+    "createdAt": "2026-11-24T18:01:25.599Z",
+    "startedAt": "2026-11-24T18:01:25.599Z",
+    "finishedAt": "2026-11-24T18:01:26.890Z",
+    "errorMessage": null,
+    "scheduleId": null,
+    "backupId": null,
+    "rollbackId": null,
+    "volumeBackupId": null,
+    "buildServerId": null
+  }
+]

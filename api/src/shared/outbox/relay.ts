@@ -1,3 +1,4 @@
+import { sql } from 'kysely'
 import type { Logger } from 'pino'
 import { Counter } from 'prom-client'
 import type { Db } from '../database/database'
@@ -61,6 +62,7 @@ export class OutboxRelay {
         .selectFrom('outbox_message')
         .select(['id', 'topic', 'payload'])
         .where('published_at', 'is', null)
+        .where('available_at', '<=', sql<Date>`now()`)
         .orderBy('id')
         .limit(BATCH)
         .forUpdate()

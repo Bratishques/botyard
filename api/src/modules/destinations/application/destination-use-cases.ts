@@ -66,6 +66,16 @@ export class DestinationUseCases {
     return (await this.repository.findById(id)) ?? notFound(id)
   }
 
+  /**
+   * Назначение с открытым ключом — для воркера саги. Ключ открывается контекстом с `base_url`: подмена
+   * адреса в базе не отправит его на чужой хост. Живёт только на время шага, не логируется.
+   */
+  async connection(id: string): Promise<{ destination: Destination; apiKey: string }> {
+    const destination = await this.get(id)
+
+    return { destination, apiKey: await this.secrets.open(destination.id, destination.baseUrl, destination.apiKeySealed) }
+  }
+
   /** Что есть в Dokploy по адресу и ключу — для выбора окружения в форме до сохранения */
   async preview(
     baseUrlInput: string,

@@ -38,8 +38,10 @@
       "METRICS_ADDR": ":8080"
     }
   },
+  "security": { "verifiesTls": true },
   "metrics": { "port": 8080, "path": "/metrics" },
   "notes": [
+    "Сертификат T-Invest проверяется системными корнями Go; корень Минцифры платформа передаёт файлом и SSL_CERT_FILE.",
     "Адрес T-Invest API захардкожен в internal/config/config.go: invest-public-api.tinkoff.ru:443.",
     "Последний коммит в upstream — май 2022, сборка на golang:1.18-alpine."
   ]

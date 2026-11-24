@@ -25,6 +25,11 @@ export interface DokployClientOptions {
   readonly random?: () => number
 }
 
+export interface CallOptions {
+  readonly timeoutMs?: number
+  readonly signal?: AbortSignal
+}
+
 export const DEFAULT_DOKPLOY_CLIENT: DokployClientOptions = { timeoutMs: 10_000, retry: DEFAULT_RETRY, breaker: DEFAULT_BREAKER }
 
 /**
@@ -54,9 +59,52 @@ export class DokployClient {
     return this.read(target, 'server.all', dokployServersSchema, signal)
   }
 
-  private read<S extends z.ZodType>(target: DokployTarget, method: string, schema: S, signal?: AbortSignal): Promise<z.infer<S>> {
-    const breaker = this.breakerFor(target.baseUrl)
+  /**
+   * Чтение `GET /api/<method>?<query>` с повторами. Схема ответа обязана выбирать только нужные поля:
+   * ответы приложений Dokploy содержат env и файлы робота вместе с токеном клиента.
+   */
+  query<S extends z.ZodType>(
+    target: DokployTarget,
+    method: string,
+    query: Record<string, string>,
+    schema: S,
+    signal?: AbortSignal,
+  ): Promise<z.infer<S>> {
+    return this.read(target, method, schema, signal, query)
+  }
 
+  /**
+   * Изменение `POST /api/<method>` с разбором ответа — одна попытка: у Dokploy нет ключа идемпотентности,
+   * повтор решает сага. Таймаут — свой у вызова: `application.start` ждёт, пока сервис сойдётся.
+   */
+  mutate<S extends z.ZodType>(
+    target: DokployTarget,
+    method: string,
+    body: Record<string, unknown>,
+    schema: S,
+    options: CallOptions = {},
+  ): Promise<z.infer<S>> {
+    return this.guarded(target, method, async () => {
+      const response = await this.post(target, method, body, options)
+      return parse(method, schema, await response.json().catch(() => undefined))
+    })
+  }
+
+  /** Изменение без нужного ответа (Dokploy отвечает `true` или пустым телом): тело не читается */
+  async command(target: DokployTarget, method: string, body: Record<string, unknown>, options: CallOptions = {}): Promise<void> {
+    await this.guarded(target, method, async () => {
+      const response = await this.post(target, method, body, options)
+      await response.body?.cancel()
+    })
+  }
+
+  private read<S extends z.ZodType>(
+    target: DokployTarget,
+    method: string,
+    schema: S,
+    signal?: AbortSignal,
+    query?: Record<string, string>,
+  ): Promise<z.infer<S>> {
     return withRetry(
       this.options.retry,
       {
@@ -70,35 +118,51 @@ export class DokployClient {
         random: this.options.random,
         signal,
       },
-      () => breaker.run(() => this.get(target, method, schema, signal), isTargetFailure).catch(wrapCircuitOpen(method)),
+      () =>
+        this.guarded(target, method, async () => {
+          const search = query && Object.keys(query).length > 0 ? `?${new URLSearchParams(query)}` : ''
+          const response = await this.send(target, method, search, { method: 'GET' }, this.options.timeoutMs, signal)
+          return parse(method, schema, await response.json().catch(() => undefined))
+        }),
     )
   }
 
-  private async get<S extends z.ZodType>(target: DokployTarget, method: string, schema: S, signal?: AbortSignal): Promise<z.infer<S>> {
-    const timeout = AbortSignal.timeout(this.options.timeoutMs)
-    const url = `${target.baseUrl}/api/${method}`
+  /** Вызов под цепью своего адреса: недоступность и непонятный ответ считаются отказом адресата */
+  private guarded<T>(target: DokployTarget, method: string, work: () => Promise<T>): Promise<T> {
+    return this.breakerFor(target.baseUrl).run(work, isTargetFailure).catch(wrapCircuitOpen(method))
+  }
+
+  private async post(target: DokployTarget, method: string, body: Record<string, unknown>, options: CallOptions): Promise<Response> {
+    const init = { method: 'POST' as const, headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }
+    return this.send(target, method, '', init, options.timeoutMs ?? this.options.timeoutMs, options.signal)
+  }
+
+  /** Запрос с таймаутом; не-2xx — ошибка по коду. Возвращает ответ с непрочитанным телом */
+  private async send(
+    target: DokployTarget,
+    method: string,
+    search: string,
+    init: { method: 'GET' | 'POST'; headers?: Record<string, string>; body?: string },
+    timeoutMs: number,
+    signal?: AbortSignal,
+  ): Promise<Response> {
+    const timeout = AbortSignal.timeout(timeoutMs)
     let response: Response
     try {
-      response = await this.fetch(url, {
-        method: 'GET',
-        headers: { 'x-api-key': target.apiKey, accept: 'application/json' },
+      response = await this.fetch(`${target.baseUrl}/api/${method}${search}`, {
+        ...init,
+        headers: { ...init.headers, 'x-api-key': target.apiKey, accept: 'application/json' },
         signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
         redirect: 'error',
       })
     } catch (error) {
       if (signal?.aborted) throw error
-      const reason = timeout.aborted ? `no answer in ${this.options.timeoutMs} ms` : 'network error'
+      const reason = timeout.aborted ? `no answer in ${timeoutMs} ms` : 'network error'
       throw new DokployUnavailableError(`dokploy ${method}: ${reason}`, undefined, { cause: error })
     }
-
     if (!response.ok) throw await failure(method, response)
 
-    const parsed = schema.safeParse(await response.json().catch(() => undefined))
-    if (!parsed.success) {
-      throw new DokployResponseError(`dokploy ${method}: unexpected response shape (${parsed.error.issues[0]?.path.join('.') ?? '?'})`)
-    }
-
-    return parsed.data
+    return response
   }
 
   /**
@@ -127,6 +191,15 @@ const MAX_BREAKERS = 256
 /** Отказ адресата — недоступность и непонятный ответ. Неверный ключ, лимит ключа и отклонённый запрос — не его отказ */
 function isTargetFailure(error: unknown): boolean {
   return error instanceof DokployUnavailableError || error instanceof DokployResponseError
+}
+
+function parse<S extends z.ZodType>(method: string, schema: S, body: unknown): z.infer<S> {
+  const parsed = schema.safeParse(body)
+  if (!parsed.success) {
+    throw new DokployResponseError(`dokploy ${method}: unexpected response shape (${parsed.error.issues[0]?.path.join('.') ?? '?'})`)
+  }
+
+  return parsed.data
 }
 
 function wrapCircuitOpen(method: string): (error: unknown) => never {

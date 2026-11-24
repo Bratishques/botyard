@@ -116,7 +116,9 @@
 lastError, version, createdAt, updatedAt }`; статусы `PROVISIONING | RUNNING | STOPPED | FAILED | DELETING | DELETED`;
 `tradingMode` — `sandbox | live`, режим клиента на момент создания.
 `Operation`: `{ id, kind: PROVISION | START | STOP | REDEPLOY | DELETE, status: PENDING | RUNNING | SUCCEEDED | FAILED, step,
-attempt, error, requestedBy, createdAt, finishedAt }`. Операции выполняет воркер (этап 2, шаг 3); ответ на запрос —
+attempt, error, requestedBy, createdAt, finishedAt }`; `step` — текущий шаг саги (`ensure_app`, `configure`,
+`prepare_deploy`, `deploy`, `await_deploy`, `start`, `stop`, `delete`), `attempt` — попытка этого шага,
+`error` — причина отказа без секретов. Операции выполняет воркер саги; ответ на запрос —
 принятая операция, а не её результат.
 
 | Метод | Путь | Тело | Ответ |
@@ -125,7 +127,7 @@ attempt, error, requestedBy, createdAt, finishedAt }`. Операции выпо
 | GET | `/deployments/:id` | — | `200 Deployment & { operations: Operation[] }` |
 | POST | `/deployments` | `{ customerId, destinationId, templateId, config }` + `Idempotency-Key` | `201 Deployment & { operation }`; конфиг проверяется по `configSchema` текущей версии шаблона, `default` подставляются |
 | POST | `/deployments/:id/start` | `{ version }` + `Idempotency-Key` | `202 Deployment & { operation }` — из `STOPPED`; назначение не выключено |
-| POST | `/deployments/:id/stop` | то же | `202` — из `RUNNING` |
+| POST | `/deployments/:id/stop` | то же | `202` — из `RUNNING` и `FAILED` |
 | POST | `/deployments/:id/redeploy` | то же | `202` — из `RUNNING`, `STOPPED`, `FAILED`; назначение не выключено |
 | POST | `/deployments/:id/delete` | то же | `202`, статус `DELETING` — из любого, кроме `DELETED`; из `DELETING` — повтор упавшего удаления |
 
@@ -134,7 +136,8 @@ attempt, error, requestedBy, createdAt, finishedAt }`. Операции выпо
 Коды: `DEPLOYMENT_NOT_FOUND` (404); `DEPLOYMENT_OPERATION_IN_PROGRESS` (идёт другая операция — дождаться),
 `DEPLOYMENT_INVALID_STATE`, `DEPLOYMENT_VERSION_CONFLICT`, `IDEMPOTENCY_CONFLICT` (409); `DEPLOYMENT_INVALID_CONFIG`
 (пути полей без значений), `DEPLOYMENT_CUSTOMER_UNAVAILABLE`, `DEPLOYMENT_DESTINATION_UNAVAILABLE`,
-`DEPLOYMENT_TEMPLATE_UNAVAILABLE` (422); `IDEMPOTENCY_KEY_REQUIRED` (400). Start и redeploy на выключенном назначении —
+`DEPLOYMENT_TEMPLATE_UNAVAILABLE`, `DEPLOYMENT_TEMPLATE_NOT_LIVE_SAFE` (робот не проверяет сертификат T-Invest,
+а клиент боевой) (422); `IDEMPOTENCY_KEY_REQUIRED` (400). Start и redeploy на выключенном назначении —
 `422 DEPLOYMENT_DESTINATION_UNAVAILABLE`.
 
 Клиента с неудалёнными развёртываниями нельзя архивировать и переключать между песочницей и боевым режимом:
@@ -149,3 +152,4 @@ attempt, error, requestedBy, createdAt, finishedAt }`. Операции выпо
 - 2026-11-24 — счёт обязателен при смене режима, смена счёта боевого клиента — с подтверждением.
 - 2026-11-24 — развёртывания и операции, `Idempotency-Key`, `CUSTOMER_HAS_DEPLOYMENTS`, `tradingMode`, запрет смены
   режима клиента с роботами, start/redeploy на выключенном назначении — 422, повтор удаления из `DELETING`.
+- 2026-11-24 — воркер саги: `step` операции, stop из `FAILED`, `DEPLOYMENT_TEMPLATE_NOT_LIVE_SAFE`.

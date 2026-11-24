@@ -1,0 +1,10 @@
+{
+  "message": "Error File path is required for file mounts",
+  "code": "BAD_REQUEST",
+  "data": {
+    "code": "BAD_REQUEST",
+    "httpStatus": 400,
+    "path": "mounts.create",
+    "zodError": null
+  }
+}
