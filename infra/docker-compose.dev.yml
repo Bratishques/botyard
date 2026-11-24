@@ -1,0 +1,47 @@
+# Окружение для разработки api. Порты сдвинуты, чтобы не мешать другим локальным Postgres и Redis.
+name: botyard-dev
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: botyard
+      POSTGRES_PASSWORD: botyard
+      POSTGRES_DB: botyard
+    ports:
+      - "55432:5432"
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+      - ./postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U botyard"]
+      interval: 5s
+      retries: 10
+
+  rabbitmq:
+    image: rabbitmq:4-management-alpine
+    environment:
+      RABBITMQ_DEFAULT_USER: botyard
+      RABBITMQ_DEFAULT_PASS: botyard
+    ports:
+      - "55672:5672"    # AMQP
+      - "55673:15672"   # UI: http://localhost:55673
+    volumes:
+      - rabbit-data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "56379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      retries: 10
+
+volumes:
+  pg-data:
+  rabbit-data:
