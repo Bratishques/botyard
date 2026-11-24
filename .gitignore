@@ -6,3 +6,6 @@ node_modules/
 .DS_Store
 .idea/
 .vscode/
+
+# кеш и журналы Turborepo: иначе журналы прошлого прогона попадают во входы задач и сбивают кеш
+.turbo

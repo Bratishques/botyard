@@ -1,4 +1,12 @@
 import {
+  DEPLOYMENT_ACTIONS,
+  type DeploymentCreateBody,
+  type DeploymentView,
+  deploymentCreateSchema,
+  type OperationView,
+  versionSchema,
+} from '@botyard/contract'
+import {
   BadRequestException,
   Body,
   Controller,
@@ -14,7 +22,6 @@ import {
   Res,
 } from '@nestjs/common'
 import type { Response } from 'express'
-import { z } from 'zod'
 import { ZodBody } from '../../../shared/http/zod-body'
 import { IDEMPOTENCY_KEY, Idempotency, IdempotencyConflictError, IdempotencyErrorCode } from '../../../shared/idempotency/idempotency'
 import type { Operator } from '../../auth/domain/auth'
@@ -22,46 +29,7 @@ import { CurrentOperator } from '../../auth/presentation/session.guard'
 import { DeploymentUseCases } from '../application/deployment-use-cases'
 import { type Deployment, DeploymentError, DeploymentErrorCode, type Operation, type OperationKind } from '../domain/deployment'
 
-const uuid = z.uuid()
-const createSchema = z
-  .object({
-    customerId: uuid,
-    destinationId: uuid,
-    templateId: z.string().regex(/^[a-z0-9][a-z0-9-]{1,38}$/),
-    config: z.record(z.string(), z.unknown()),
-  })
-  .strict()
-const versionSchema = z.object({ version: z.number().int().positive() }).strict()
 const VERSION_BODY = new ZodBody(versionSchema)
-
-export interface DeploymentView {
-  id: string
-  customerId: string
-  destinationId: string
-  templateId: string
-  templateVersion: string
-  config: Record<string, unknown>
-  tradingMode: Deployment['tradingMode']
-  appName: string
-  status: Deployment['status']
-  activeOperationId: string | null
-  lastError: string | null
-  version: number
-  createdAt: string
-  updatedAt: string
-}
-
-export interface OperationView {
-  id: string
-  kind: Operation['kind']
-  status: Operation['status']
-  step: string | null
-  attempt: number
-  error: string | null
-  requestedBy: string
-  createdAt: string
-  finishedAt: string | null
-}
 
 function deploymentView(deployment: Deployment): DeploymentView {
   return {
@@ -146,12 +114,7 @@ const DEPLOYMENT_ID = new ParseUUIDPipe({
 
 const actor = (operator: Operator) => `operator:${operator.id}`
 
-const ACTIONS: Readonly<Record<string, Exclude<OperationKind, 'PROVISION'>>> = Object.assign(Object.create(null), {
-  start: 'START',
-  stop: 'STOP',
-  redeploy: 'REDEPLOY',
-  delete: 'DELETE',
-})
+const ACTIONS: Readonly<Record<string, Exclude<OperationKind, 'PROVISION'>>> = Object.assign(Object.create(null), DEPLOYMENT_ACTIONS)
 
 /**
  * Развёртывания. Изменяющие запросы требуют `Idempotency-Key`: двойной клик или повтор после обрыва
@@ -178,7 +141,7 @@ export class DeploymentsController {
 
   @Post()
   async create(
-    @Body(new ZodBody(createSchema)) body: z.infer<typeof createSchema>,
+    @Body(new ZodBody(deploymentCreateSchema)) body: DeploymentCreateBody,
     @Headers('idempotency-key') key: string | undefined,
     @CurrentOperator() operator: Operator,
     @Res({ passthrough: true }) response: Response,

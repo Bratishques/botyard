@@ -165,3 +165,5 @@ attempt, error, requestedBy, createdAt, finishedAt }`; `step` — текущий
 - 2026-11-24 — проверка токена и счёта у T-Invest: `CUSTOMER_TOKEN_REJECTED`, `CUSTOMER_ACCOUNT_NOT_FOUND`,
   `CUSTOMER_TOKEN_READ_ONLY`, `CUSTOMER_ACCOUNT_NOT_TRADABLE`, `CUSTOMER_LIVE_TOKEN_IN_SANDBOX`,
   `CUSTOMER_BROKER_UNAVAILABLE`, `CUSTOMER_LIVE_CHECK_DISABLED`; токен — печатные ASCII без пробелов.
+- 2026-11-24 — схемы запросов вынесены в `@botyard/contract`; тело `{ version }` у включения и выключения назначения
+  теперь строгое, как у остальных: лишние поля — `400 VALIDATION_FAILED`.

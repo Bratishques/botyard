@@ -59,9 +59,13 @@ admin ──► api ──► outbox ──► RabbitMQ ──► worker ──�
 | Папка | Что внутри |
 |---|---|
 | [api](api) | бэкенд: NestJS 12 на Bun, Kysely + PostgreSQL 17, RabbitMQ; дизайн-документы в `api/docs` |
+| [packages/contract](packages/contract) | контракт админ-API: схемы запросов (zod) и формы ответов — общие для api и админки |
 | [admin](admin) | админка для операторов (React, Vite) — этап 4 |
 | [bots](bots) | каталог роботов: манифесты для [BITA](https://github.com/elkopass/BITA) и [Contest Robot 2022](https://github.com/Antonboom/tinkoff-invest-robot-contest-2022) |
 | [infra](infra) | dev-окружение (Postgres, RabbitMQ, Redis) и установка Dokploy |
+
+Монорепо на [Turborepo](https://turborepo.com) и workspaces Bun: зависимости ставятся один раз в корне, версии общих
+инструментов (`zod`, TypeScript, Biome) — в каталоге корневого `package.json`, задачи идут по графу пакетов с кешем.
 
 ## Запуск
 
@@ -69,12 +73,10 @@ admin ──► api ──► outbox ──► RabbitMQ ──► worker ──�
 
 ```bash
 docker compose -f infra/docker-compose.dev.yml up -d --wait
-cd api
-cp .env.example .env                                   # и задать SECRETS_MASTER_KEY: openssl rand -base64 32
-bun install
-bun run migrate
-bun run dev                                            # http://localhost:4000/health/ready
-bun run check && bun run test:int                      # линтер, типы, unit и интеграционные тесты
+bun install                                            # в корне: все пакеты
+cp api/.env.example api/.env                           # и задать SECRETS_MASTER_KEY: openssl rand -base64 32
+cd api && bun run migrate && bun run dev               # http://localhost:4000/health/ready
+cd .. && bun run check && bun run test:int             # линтер, типы и тесты всех пакетов через turbo
 ```
 
 ## Дисклеймер

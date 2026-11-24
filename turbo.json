@@ -1,0 +1,32 @@
+{
+  "$schema": "https://turborepo.dev/schema.json",
+  "globalDependencies": ["biome.json"],
+  "tasks": {
+    "lint": {},
+    "typecheck": {
+      "dependsOn": ["^typecheck"]
+    },
+    "test": {
+      "dependsOn": ["^typecheck"]
+    },
+    "test:int": {
+      "cache": false,
+      "passThroughEnv": ["DATABASE_URL", "RABBITMQ_URL"]
+    },
+    "test:contract": {
+      "cache": false,
+      "passThroughEnv": [
+        "TINVEST_CONTRACT",
+        "TINVEST_TEST_SANDBOX_TOKEN",
+        "TINVEST_TEST_SANDBOX_ACCOUNT",
+        "DOKPLOY_TEST_URL",
+        "DOKPLOY_TEST_API_KEY",
+        "DOKPLOY_TEST_ENVIRONMENT_ID"
+      ]
+    },
+    "format": {
+      "cache": false
+    },
+    "//#lint:root": {}
+  }
+}

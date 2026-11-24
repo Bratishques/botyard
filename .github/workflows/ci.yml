@@ -9,11 +9,9 @@ permissions:
   contents: read
 
 jobs:
+  # Монорепо на Turborepo: зависимости ставятся один раз в корне, задачи идут по графу пакетов (turbo.json)
   api:
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: api
     services:
       # Порт и учётные данные совпадают с infra/docker-compose.dev.yml и api/.env.test
       postgres:
@@ -46,11 +44,11 @@ jobs:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.4.4
+          bun-version-file: package.json
       - run: bun install --frozen-lockfile
-      - run: bun run lint
-      - run: bun run typecheck
-      - run: bun run test
+      # lint, typecheck и unit-тесты всех пакетов (api, packages/contract)
+      - run: bun run check
+      # Интеграционные — без кеша: зависят от живых Postgres и RabbitMQ
       - run: bun run test:int
 
   bots:

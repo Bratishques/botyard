@@ -318,6 +318,7 @@ contest-2022) без него получает `x509: certificate signed by unkn
 | Кеш, pub/sub логов | Redis 7 | Раздача логов SSE между репликами `http` |
 | Тесты | `bun test`; интеграционные — на Postgres и RabbitMQ из `infra`, отдельная тестовая БД; заглушка Dokploy на `Bun.serve` | Интеграционные тесты на настоящих зависимостях, без моков репозиториев |
 | Линтер и формат | Biome | Одна утилита вместо ESLint и Prettier |
+| Монорепо | Turborepo, workspaces Bun, пакет `@botyard/contract` | Граф задач с кешем; схемы API — один источник для api и админки |
 | Админка | React 19, Vite, TanStack Query и Router | SPA без SSR, нужна только операторам |
 | Наблюдаемость | pino (JSON), Prometheus `/metrics`, `/health/live` и `/health/ready` | — |
 
