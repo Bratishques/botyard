@@ -277,6 +277,58 @@ describe('проверка токена и счёта у брокера', () => 
     expect(await customers.revealToken(rotated)).toBe(fresh)
   })
 
+  test('переплетение внутри проверки: смена счёта и ротация токена — счёт не сохраняется с токеном, которым не проверен', async () => {
+    const created = await customers.create(input(), 'operator:1')
+    const fresh = 't.rotated-in-race-0123456789abcdef'
+    broker.holdUntil(2)
+    let results: PromiseSettledResult<Customer>[]
+    try {
+      results = await Promise.allSettled([
+        customers.update(created.id, { version: 1, accountId: 'account-b' }, 'operator:1'),
+        customers.rotateToken(created.id, { version: 1, token: fresh }, 'operator:2'),
+      ])
+    } finally {
+      broker.release()
+    }
+
+    // Обе проверки прошли на одном снимке; записывается одна правка, вторая — конфликт версии
+    expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(1)
+    const rejected = results.find((result): result is PromiseRejectedResult => result.status === 'rejected')
+    expect(rejected?.reason).toMatchObject({ code: CustomerErrorCode.VERSION_CONFLICT })
+    const stored = await customers.get(created.id)
+    const token = await customers.revealToken(stored)
+    // Сочетания «новый счёт + новый токен» (никем не проверенного) не бывает
+    expect(stored.accountId === 'account-b' && token === fresh).toBe(false)
+  })
+
+  test('боевой клиент: ротация и смена счёта проверяются в боевом режиме; возврат в песочницу — в песочнице', async () => {
+    const created = await customers.create(input(), 'operator:1')
+    const live = await customers.goLive(
+      created.id,
+      { version: 1, token: LIVE_TOKEN, accountId: LIVE_ACCOUNT, confirmName: created.name },
+      'operator:1',
+    )
+
+    broker.asked.length = 0
+    const rotated = await customers.rotateToken(
+      created.id,
+      { version: live.version, token: 't.live-rotated-0123456789abcdef' },
+      'operator:1',
+    )
+    const moved = await customers.update(
+      created.id,
+      { version: rotated.version, accountId: '2000999999', confirmName: created.name },
+      'operator:1',
+    )
+    await customers.goSandbox(created.id, { version: moved.version, token: SANDBOX_TOKEN, accountId: SANDBOX_ACCOUNT }, 'operator:1')
+
+    expect(broker.asked).toEqual([
+      { mode: 'live', accountId: LIVE_ACCOUNT },
+      { mode: 'live', accountId: '2000999999' },
+      { mode: 'sandbox', accountId: SANDBOX_ACCOUNT },
+    ])
+  })
+
   test('проверка выключена (разработка, тесты): песочница — можно, боевой режим — закрыт', async () => {
     const offline = new CustomerUseCases(repository, box, unitOfWork, new AuditLog(unitOfWork), new DisabledTradingAccounts())
     const created = await offline.create(input(), 'operator:1')

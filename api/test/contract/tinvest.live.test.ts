@@ -23,4 +23,10 @@ live('T-Invest API (живой)', () => {
     expect(await accounts.check(sandboxToken ?? '', 'sandbox', sandboxAccount ?? '')).toEqual({ ok: true })
     expect(await accounts.check(sandboxToken ?? '', 'sandbox', 'not-my-account')).toEqual({ ok: false, reason: 'ACCOUNT_NOT_FOUND' })
   })
+
+  // Ответ на вопрос BITA (боевой адрес зашит, режим — только токеном): чем отвечает боевой контур
+  // на токен песочницы. Ожидание — отказ; если тест упал, документ про BITA надо пересмотреть
+  test.skipIf(!sandboxToken)('токен песочницы на боевом контуре не принимается', async () => {
+    expect(await accounts.check(sandboxToken ?? '', 'live', sandboxAccount ?? '')).toEqual({ ok: false, reason: 'TOKEN_REJECTED' })
+  })
 })

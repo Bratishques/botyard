@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from 'bun:test'
 import accountsFixture from '../../../test/fixtures/tinvest/accounts.json'
 import unauthenticatedFixture from '../../../test/fixtures/tinvest/unauthenticated.json'
+import { TINVEST_ROOT_CA_PEM } from './tinvest'
 import {
   DEFAULT_TINVEST_CLIENT,
   TInvestClient,
@@ -57,6 +58,21 @@ async function failure(work: Promise<unknown>): Promise<Error> {
 }
 
 describe('клиент T-Invest', () => {
+  test('по умолчанию TLS — только с корнем Минцифры (Bun заменяет им системные корни)', async () => {
+    let tls: unknown
+    const capture = Object.assign(
+      async (_input: string | URL | Request, init?: RequestInit & { tls?: unknown }) => {
+        tls = init?.tls
+        return Response.json({ accounts: [] })
+      },
+      { preconnect: () => undefined },
+    )
+
+    await new TInvestClient({ ...DEFAULT_TINVEST_CLIENT, fetch: capture }).accounts('live', TOKEN)
+
+    expect(tls).toEqual({ ca: TINVEST_ROOT_CA_PEM })
+  })
+
   test('боевые счета — UsersService/GetAccounts на боевом контуре, токен в заголовке; пропущенные поля — UNSPECIFIED', async () => {
     replies.set('UsersService/GetAccounts', [{ status: 200, body: accountsFixture }])
 
@@ -67,9 +83,15 @@ describe('клиент T-Invest', () => {
       authorization: `Bearer ${TOKEN}`,
       body: {},
     })
-    expect(accounts[0]).toEqual({ id: '2000000001', status: 'ACCOUNT_STATUS_OPEN', accessLevel: 'ACCOUNT_ACCESS_LEVEL_FULL_ACCESS' })
+    expect(accounts[0]).toEqual({
+      id: '2000000001',
+      type: 'ACCOUNT_TYPE_TINKOFF',
+      status: 'ACCOUNT_STATUS_OPEN',
+      accessLevel: 'ACCOUNT_ACCESS_LEVEL_FULL_ACCESS',
+    })
     expect(accounts[3]).toEqual({
       id: '2000000004',
+      type: 'ACCOUNT_TYPE_UNSPECIFIED',
       status: 'ACCOUNT_STATUS_UNSPECIFIED',
       accessLevel: 'ACCOUNT_ACCESS_LEVEL_UNSPECIFIED',
     })

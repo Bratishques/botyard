@@ -112,8 +112,11 @@
 
 Токен и счёт проверяются у T-Invest при создании, ротации токена, смене режима и смене счёта (в режиме клиента):
 `CUSTOMER_TOKEN_REJECTED` (токен не принят), `CUSTOMER_ACCOUNT_NOT_FOUND` (у токена нет такого открытого счёта),
-`CUSTOMER_TOKEN_READ_ONLY` (боевой токен «только чтение») — 422; `CUSTOMER_BROKER_UNAVAILABLE` — 503, повторить позже;
-`CUSTOMER_LIVE_CHECK_DISABLED` — 409, проверка выключена конфигурацией и боевой режим недоступен.
+`CUSTOMER_TOKEN_READ_ONLY` (боевой токен «только чтение»), `CUSTOMER_ACCOUNT_NOT_TRADABLE` (не брокерский счёт и не ИИС),
+`CUSTOMER_LIVE_TOKEN_IN_SANDBOX` (для песочницы дан токен с полным доступом к реальному счёту) — 422;
+`CUSTOMER_BROKER_UNAVAILABLE` — 503, повторить позже; `CUSTOMER_LIVE_CHECK_DISABLED` — 409, проверка выключена
+конфигурацией: боевой режим, ротация токена и смена счёта боевого клиента недоступны. Токен — печатные ASCII без
+пробелов, иначе `400 VALIDATION_FAILED`.
 
 ## Развёртывания
 
@@ -160,4 +163,5 @@ attempt, error, requestedBy, createdAt, finishedAt }`; `step` — текущий
 - 2026-11-24 — воркер саги: `step` операции, stop из `FAILED`, `DEPLOYMENT_TEMPLATE_NOT_LIVE_SAFE`;
   назначение с роботами: `DESTINATION_HAS_DEPLOYMENTS`, `DESTINATION_KEY_CANNOT_SEE_DEPLOYMENTS`.
 - 2026-11-24 — проверка токена и счёта у T-Invest: `CUSTOMER_TOKEN_REJECTED`, `CUSTOMER_ACCOUNT_NOT_FOUND`,
-  `CUSTOMER_TOKEN_READ_ONLY`, `CUSTOMER_BROKER_UNAVAILABLE`, `CUSTOMER_LIVE_CHECK_DISABLED`.
+  `CUSTOMER_TOKEN_READ_ONLY`, `CUSTOMER_ACCOUNT_NOT_TRADABLE`, `CUSTOMER_LIVE_TOKEN_IN_SANDBOX`,
+  `CUSTOMER_BROKER_UNAVAILABLE`, `CUSTOMER_LIVE_CHECK_DISABLED`; токен — печатные ASCII без пробелов.

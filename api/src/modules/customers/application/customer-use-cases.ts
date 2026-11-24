@@ -223,6 +223,13 @@ export class CustomerUseCases {
         throw new CustomerError(CustomerErrorCode.ACCOUNT_NOT_FOUND, `the token has no open ${mode} account with this id`)
       case 'READ_ONLY':
         throw new CustomerError(CustomerErrorCode.TOKEN_READ_ONLY, 'the token is read-only for this account: robots could not place orders')
+      case 'ACCOUNT_NOT_TRADABLE':
+        throw new CustomerError(CustomerErrorCode.ACCOUNT_NOT_TRADABLE, 'only a brokerage account or an IIS can be traded by robots')
+      case 'LIVE_TOKEN_IN_SANDBOX':
+        throw new CustomerError(
+          CustomerErrorCode.LIVE_TOKEN_IN_SANDBOX,
+          'the token has full access to a real account: use a sandbox or read-only token for the sandbox',
+        )
     }
   }
 

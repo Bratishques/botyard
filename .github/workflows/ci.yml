@@ -34,6 +34,8 @@ jobs:
         env:
           RABBITMQ_DEFAULT_USER: botyard
           RABBITMQ_DEFAULT_PASS: botyard
+          # Тесты ходят в свой vhost, как в свою базу (api/.env.test)
+          RABBITMQ_DEFAULT_VHOST: botyard_test
         ports:
           - 55672:5672
         options: >-

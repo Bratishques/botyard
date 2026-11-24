@@ -17,9 +17,16 @@ const CONTRACT = 'tinkoff.public.invest.api.contract.v1'
 /** Счёт T-Invest — поля, которыми пользуется Botyard (users.proto, `Account`) */
 export interface TInvestAccount {
   readonly id: string
+  readonly type: string
   readonly status: string
   readonly accessLevel: string
 }
+
+/**
+ * Токен — печатные ASCII без пробелов: иначе Bun не соберёт заголовок `Authorization` и бросит до отправки,
+ * а это выглядело бы как сбой сети — повторы и размыкание общей цепи контура
+ */
+const TOKEN_FORMAT = /^[\x21-\x7e]{1,512}$/
 
 const accountsSchema = z.object({
   accounts: z
@@ -27,14 +34,22 @@ const accountsSchema = z.object({
       z.object({
         id: z.string(),
         // Значения по умолчанию в proto3 JSON не передаются: нет поля — значит UNSPECIFIED
+        type: z.string().default('ACCOUNT_TYPE_UNSPECIFIED'),
         status: z.string().default('ACCOUNT_STATUS_UNSPECIFIED'),
         accessLevel: z.string().default('ACCOUNT_ACCESS_LEVEL_UNSPECIFIED'),
       }),
     )
     .default([]),
 })
-/** Ошибка REST-прокси: `{ code, message, description }`, в `description` — код ошибки T-Invest (40003 …) */
-const errorSchema = z.object({ code: z.number().optional(), message: z.string().nullish(), description: z.string().nullish() })
+/**
+ * Ошибка REST-прокси: `{ code, message, description }`, в `description` — код ошибки T-Invest (40003 …).
+ * OpenAPI описывает его числом, живой API отдаёт строкой — принимаются оба
+ */
+const errorSchema = z.object({
+  code: z.number().optional(),
+  message: z.string().nullish(),
+  description: z.union([z.string(), z.number()]).nullish(),
+})
 
 /**
  * Исходы, которые различает вызывающий:
@@ -47,6 +62,11 @@ export class TInvestError extends Error {}
 
 export class TInvestUnauthenticatedError extends TInvestError {
   override readonly name = 'TInvestUnauthenticatedError'
+}
+
+/** Токен не годится для запроса по форме (пробел, кириллица): отклонён до отправки */
+export class TInvestTokenFormatError extends TInvestError {
+  override readonly name = 'TInvestTokenFormatError'
 }
 
 export class TInvestRejectedError extends TInvestError {
@@ -67,10 +87,14 @@ export class TInvestUnavailableError extends TInvestError {
   constructor(
     message: string,
     readonly retryAfterMs?: number,
-    options?: { cause?: unknown },
+    options?: { cause?: unknown; rateLimited?: boolean },
   ) {
     super(message, options)
+    this.rateLimited = options?.rateLimited ?? false
   }
+
+  /** Лимит запросов — лимит токена, а не отказ контура: цепь из-за него не размыкается */
+  readonly rateLimited: boolean
 }
 
 export interface TInvestClientOptions {
@@ -85,9 +109,12 @@ export interface TInvestClientOptions {
   readonly random?: () => number
 }
 
+/**
+ * Проверку ждёт оператор в запросе админки: две попытки по 8 с — не дольше ~17 с вместе с паузой
+ */
 export const DEFAULT_TINVEST_CLIENT: TInvestClientOptions = {
-  timeoutMs: 10_000,
-  retry: DEFAULT_RETRY,
+  timeoutMs: 8_000,
+  retry: { ...DEFAULT_RETRY, attempts: 2 },
   breaker: DEFAULT_BREAKER,
   baseUrls: TINVEST_REST,
   ca: TINVEST_ROOT_CA_PEM,
@@ -112,6 +139,7 @@ export class TInvestClient {
   /** Счета токена: боевые (`UsersService.GetAccounts`) или песочницы (`SandboxService.GetSandboxAccounts`) */
   async accounts(mode: 'live' | 'sandbox', token: string, signal?: AbortSignal): Promise<TInvestAccount[]> {
     const method = mode === 'live' ? 'UsersService/GetAccounts' : 'SandboxService/GetSandboxAccounts'
+    if (!TOKEN_FORMAT.test(token)) throw new TInvestTokenFormatError(`t-invest ${method}: the token has characters not allowed in a header`)
     const response = await this.call(mode, method, token, {}, signal)
     const parsed = accountsSchema.safeParse(response)
     if (!parsed.success) throw new TInvestUnavailableError(`t-invest ${method}: unexpected response shape`)
@@ -136,7 +164,7 @@ export class TInvestClient {
         breaker
           .run(
             () => this.post(mode, method, token, body, signal),
-            (error) => error instanceof TInvestUnavailableError,
+            (error) => error instanceof TInvestUnavailableError && !error.rateLimited,
           )
           .catch((error: unknown) => {
             if (error instanceof CircuitOpenError) {
@@ -168,13 +196,18 @@ export class TInvestClient {
     if (response.ok) return response.json().catch(() => undefined)
 
     const parsed = errorSchema.safeParse(await response.json().catch(() => undefined))
-    const code = parsed.success ? (parsed.data.description ?? null) : null
+    const description = parsed.success ? parsed.data.description : null
+    const code = description === null || description === undefined ? null : String(description)
     const text = parsed.success && parsed.data.message ? ` ${parsed.data.message}` : ''
     const message = `t-invest ${method}: ${response.status}${code ? ` (${code})` : ''}${text}`
     if (response.status === 401) throw new TInvestUnauthenticatedError(message)
-    if (response.status === 429 || response.status >= 500) {
-      throw new TInvestUnavailableError(message, retryAfter(response.headers.get('retry-after')))
+    if (response.status === 429) {
+      // T-Invest сообщает время до сброса лимита в x-ratelimit-reset (секунды), Retry-After не шлёт
+      const wait = retryAfter(response.headers.get('x-ratelimit-reset')) ?? retryAfter(response.headers.get('retry-after'))
+      throw new TInvestUnavailableError(message, wait, { rateLimited: true })
     }
+    // 408 — таймаут на стороне T-Invest: исход временный
+    if (response.status === 408 || response.status >= 500) throw new TInvestUnavailableError(message)
 
     throw new TInvestRejectedError(response.status, code, message)
   }

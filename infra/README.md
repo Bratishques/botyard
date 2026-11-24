@@ -17,3 +17,4 @@ docker compose -f docker-compose.dev.yml up -d --wait
 | Redis | `redis://localhost:56379` | — |
 
 RabbitMQ 4 не разрешает временные неэксклюзивные очереди — очереди Botyard устойчивые (`durable`).
+Интеграционные тесты ходят в vhost `botyard_test` (создаётся при старте брокера), dev-процессы — в `/`.
