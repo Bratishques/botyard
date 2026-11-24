@@ -354,6 +354,8 @@ describe('развёртывания по HTTP', () => {
 
     const unknown = await fetch(`${base}/deployments/${created.id}/explode`, withKey(json({ version }, cookie), `x-${crypto.randomUUID()}`))
     expect(unknown.status).toBe(404)
+    const unknownBadBody = await fetch(`${base}/deployments/${created.id}/explode`, withKey(json({}, cookie), `y-${crypto.randomUUID()}`))
+    expect(unknownBadBody.status).toBe(404)
   })
 })
 

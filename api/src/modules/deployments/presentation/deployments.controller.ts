@@ -9,6 +9,7 @@ import {
   NotFoundException,
   Param,
   ParseUUIDPipe,
+  type PipeTransform,
   Post,
   Res,
 } from '@nestjs/common'
@@ -31,6 +32,7 @@ const createSchema = z
   })
   .strict()
 const versionSchema = z.object({ version: z.number().int().positive() }).strict()
+const VERSION_BODY = new ZodBody(versionSchema)
 
 export interface DeploymentView {
   id: string
@@ -128,6 +130,15 @@ function requireKey(key: string | undefined): string {
   return key
 }
 
+/** Действие из пути. Тело операции разбирается после него: неизвестное действие — 404 даже с невалидным телом */
+const ACTION: PipeTransform<string, Exclude<OperationKind, 'PROVISION'>> = {
+  transform(action) {
+    const kind = ACTIONS[action]
+    if (!kind) throw new NotFoundException({ code: 'NOT_FOUND', message: 'route not found' })
+    return kind
+  },
+}
+
 const DEPLOYMENT_ID = new ParseUUIDPipe({
   exceptionFactory: () => new BadRequestException({ code: 'VALIDATION_FAILED', message: 'id: must be a uuid' }),
 })
@@ -189,14 +200,13 @@ export class DeploymentsController {
   @Post(':id/:action')
   async operate(
     @Param('id', DEPLOYMENT_ID) id: string,
-    @Param('action') action: string,
-    @Body(new ZodBody(versionSchema)) body: { version: number },
+    @Param('action', ACTION) kind: Exclude<OperationKind, 'PROVISION'>,
+    @Body() raw: unknown,
     @Headers('idempotency-key') key: string | undefined,
     @CurrentOperator() operator: Operator,
     @Res({ passthrough: true }) response: Response,
   ): Promise<unknown> {
-    const kind = ACTIONS[action]
-    if (!kind) throw new NotFoundException({ code: 'NOT_FOUND', message: `unknown action ${action}` })
+    const body = VERSION_BODY.transform(raw)
     // Один scope на все операции развёртывания: тот же ключ для stop и start — 409, а не две операции
     const scope = `${actor(operator)}:deployments.${id}.operate`
     const result = await http(

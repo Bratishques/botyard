@@ -408,6 +408,57 @@ describe('клиент и его развёртывания', () => {
     expect(deployment.tradingMode).toBe('sandbox')
   })
 
+  test('переплетение: смена режима держит клиента — создание дожидается и берёт новый режим', async () => {
+    const customerId = await customer()
+    const destinationId = await destination()
+
+    const created = await whileLocked(
+      (trx) =>
+        trx.updateTable('customer').set({ sandbox: false, version: sql<number>`version + 1` }).where('id', '=', customerId).execute(),
+      () => deployments.create({ customerId, destinationId, templateId: 'bita', config: bitaConfig }, 'operator:1'),
+    )
+
+    expect(created.deployment.tradingMode).toBe('live')
+  })
+
+  test('переплетение: создание держит клиента — смена режима дожидается и получает HAS_DEPLOYMENTS', async () => {
+    const customerId = await customer()
+    const destinationId = await destination()
+    const current = await customers.get(customerId)
+
+    const outcome = await whileLocked(
+      async (trx) => {
+        await trx.selectFrom('customer').select('id').where('id', '=', customerId).forShare().execute()
+        await trx
+          .insertInto('bot_deployment')
+          .values({
+            id: Bun.randomUUIDv7(),
+            customer_id: customerId,
+            destination_id: destinationId,
+            template_id: 'bita',
+            template_version: (
+              await trx.selectFrom('bot_template').select('current_version').where('id', '=', 'bita').executeTakeFirstOrThrow()
+            ).current_version,
+            config: '{}',
+            trading_mode: 'sandbox',
+            app_name: `by-${crypto.randomUUID().replace(/-/g, '').slice(-12)}`,
+            status: 'STOPPED',
+          })
+          .execute()
+      },
+      () =>
+        codeOf(
+          customers.goLive(
+            customerId,
+            { version: current.version, token: 't.live-token-0123456789abcdef', accountId: 'live-account', confirmName: current.name },
+            'operator:2',
+          ),
+        ),
+    )
+
+    expect(outcome).toBe(CustomerErrorCode.HAS_DEPLOYMENTS)
+  })
+
   test('гонка: создание развёртывания против перевода клиента в боевой — режим развёртывания всегда равен режиму клиента', async () => {
     for (let round = 0; round < 5; round++) {
       const customerId = await customer()

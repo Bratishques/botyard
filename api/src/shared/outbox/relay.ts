@@ -1,7 +1,7 @@
 import type { Logger } from 'pino'
 import { Counter } from 'prom-client'
 import type { Db } from '../database/database'
-import { type Broker, BrokerLostError, EXCHANGE } from '../messaging/rabbitmq'
+import { type Broker, EXCHANGE } from '../messaging/rabbitmq'
 import { registry } from '../observability/metrics'
 
 const relayed = new Counter({
@@ -37,6 +37,11 @@ export class ReturnedMessagesError extends Error {
 export class OutboxRelay {
   private stopping = false
   private lostError: Error | null = null
+  /**
+   * Ожидания, которые потеря брокера должна прервать. Не `Promise.race` с `broker.lost`: каждая гонка вешала
+   * бы на вечно ожидающий промис новую реакцию, и память росла бы с каждым тиком
+   */
+  private readonly waiters = new Set<(error: Error) => void>()
 
   constructor(
     private readonly db: Db,
@@ -45,6 +50,7 @@ export class OutboxRelay {
   ) {
     void broker.lost.then((error) => {
       this.lostError = error
+      for (const abort of this.waiters) abort(error)
     })
   }
 
@@ -62,7 +68,7 @@ export class OutboxRelay {
         .execute()
       if (batch.length === 0) return 0
 
-      const returns = this.broker.trackReturns()
+      const returns = this.broker.trackReturns(new Set(batch.map((message) => message.id)))
       try {
         for (const message of batch) {
           this.broker.channel.publish(EXCHANGE, message.topic, Buffer.from(JSON.stringify(message.payload)), {
@@ -125,15 +131,24 @@ export class OutboxRelay {
     const timeout = new Promise<never>((_, reject) => {
       timer = setTimeout(() => reject(new Error(`broker did not confirm within ${CONFIRM_TIMEOUT_MS} ms`)), CONFIRM_TIMEOUT_MS)
     })
-    const lost = this.broker.lost.then((error) => Promise.reject(error))
     try {
-      await Promise.race([this.broker.channel.waitForConfirms(), timeout, lost])
+      await this.untilLost(Promise.race([this.broker.channel.waitForConfirms(), timeout]))
     } finally {
       clearTimeout(timer)
     }
   }
 
   private async pause(ms: number): Promise<void> {
-    await Promise.race([Bun.sleep(ms), this.broker.lost])
+    await this.untilLost(Bun.sleep(ms)).catch(() => undefined)
+  }
+
+  /** `work`, прерванная потерей брокера; ожидание снимается с учёта, как только завершилось */
+  private untilLost<T>(work: Promise<T>): Promise<T> {
+    if (this.lostError) return Promise.reject(this.lostError)
+
+    return new Promise<T>((resolve, reject) => {
+      this.waiters.add(reject)
+      work.then(resolve, reject).finally(() => this.waiters.delete(reject))
+    })
   }
 }

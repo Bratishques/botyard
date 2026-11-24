@@ -134,7 +134,8 @@ attempt, error, requestedBy, createdAt, finishedAt }`. Операции выпо
 Коды: `DEPLOYMENT_NOT_FOUND` (404); `DEPLOYMENT_OPERATION_IN_PROGRESS` (идёт другая операция — дождаться),
 `DEPLOYMENT_INVALID_STATE`, `DEPLOYMENT_VERSION_CONFLICT`, `IDEMPOTENCY_CONFLICT` (409); `DEPLOYMENT_INVALID_CONFIG`
 (пути полей без значений), `DEPLOYMENT_CUSTOMER_UNAVAILABLE`, `DEPLOYMENT_DESTINATION_UNAVAILABLE`,
-`DEPLOYMENT_TEMPLATE_UNAVAILABLE` (422; для start и redeploy — выключенное назначение); `IDEMPOTENCY_KEY_REQUIRED` (400).
+`DEPLOYMENT_TEMPLATE_UNAVAILABLE` (422); `IDEMPOTENCY_KEY_REQUIRED` (400). Start и redeploy на выключенном назначении —
+`422 DEPLOYMENT_DESTINATION_UNAVAILABLE`.
 
 Клиента с неудалёнными развёртываниями нельзя архивировать и переключать между песочницей и боевым режимом:
 `409 CUSTOMER_HAS_DEPLOYMENTS`.

@@ -15,6 +15,13 @@ const INLINE_HELPERS = new Set(['join'])
 const BLOCK_HELPERS = new Set(['each', 'if', 'unless'])
 /** Служебные переменные `each`; `@root` и прочие `@`-переменные обходили бы проверку имён */
 const LOOP_DATA = new Set(['index', 'first', 'last', 'key'])
+/**
+ * Имена, которые Handlebars в `{{имя}}` без аргументов разрешает как хелпер, а не как поле: поле элемента
+ * с таким именем отрендерилось бы вызовом хелпера
+ */
+const HELPER_NAMES = new Set([...Object.keys(Handlebars.helpers), ...INLINE_HELPERS, ...BLOCK_HELPERS])
+/** Сегмент пути — простой идентификатор: `[customer.accountId]` — один сегмент с точкой, а не путь */
+const SEGMENT = /^[A-Za-z_][A-Za-z0-9_]*$/
 
 type Scope = { readonly kind: 'root' } | { readonly kind: 'item'; readonly fields: ReadonlySet<string>; readonly parent: Scope }
 
@@ -52,8 +59,12 @@ function walkStatement(statement: hbs.AST.Statement, scope: Scope, schema: Schem
       return
     }
     const helper = nameOf(mustache.path)
-    if (!INLINE_HELPERS.has(helper)) errors.push(`helper "${helper}" is not allowed`)
-    for (const param of params) checkExpression(param, scope, schema, errors)
+    if (!INLINE_HELPERS.has(helper)) {
+      errors.push(`helper "${helper}" is not allowed`)
+      for (const param of params) checkExpression(param, scope, schema, errors)
+      return
+    }
+    checkJoin(params, scope, schema, errors)
     return
   }
 
@@ -75,6 +86,7 @@ function walkStatement(statement: hbs.AST.Statement, scope: Scope, schema: Schem
       if (items) inner = { kind: 'item', fields: new Set(Object.keys(items.properties ?? {})), parent: scope }
       else errors.push(`{{#each ${subject.original}}} must iterate an array of objects from config.schema`)
     }
+    if ((block.program?.blockParams?.length ?? 0) > 0) errors.push('block parameters (as |x|) are not allowed')
     walkProgram(block.program, inner, schema, errors)
     walkProgram(block.inverse, scope, schema, errors)
     return
@@ -98,8 +110,17 @@ function checkExpression(expression: hbs.AST.Expression, scope: Scope, schema: S
 function checkPath(path: hbs.AST.PathExpression, scope: Scope, schema: Schema, errors: string[]): void {
   if (path.data) {
     const [name] = path.parts
-    if (scope.kind === 'item' && path.parts.length === 1 && name !== undefined && LOOP_DATA.has(name)) return
+    if (scope.kind === 'item' && path.depth === 0 && path.parts.length === 1 && name !== undefined && LOOP_DATA.has(name)) return
     errors.push(`data variable "${path.original}" is not allowed`)
+    return
+  }
+  const literal = path.parts.find((part) => !SEGMENT.test(part))
+  if (literal !== undefined) {
+    errors.push(`path segment "[${literal}]" is not a plain name`)
+    return
+  }
+  if (scope.kind === 'item' && path.depth === 0 && path.parts.length === 1 && HELPER_NAMES.has(path.parts[0] ?? '')) {
+    errors.push(`field "${path.original}" has the name of a helper and would not render as a field`)
     return
   }
   // `../` выше корня Handlebars молча рендерит пустым: такой путь — ошибка, а не корень
@@ -126,6 +147,25 @@ function itemsOf(path: hbs.AST.PathExpression, scope: Scope, schema: Schema): Sc
   if (field?.type !== 'array' || field.items?.type !== 'object') return null
 
   return field.items
+}
+
+/** `{{join config.<массив скаляров> "разделитель"}}` — и ничего другого */
+function checkJoin(params: hbs.AST.Expression[], scope: Scope, schema: Schema, errors: string[]): void {
+  const [list, separator] = params
+  if (params.length !== 2 || !list || separator?.type !== 'StringLiteral') {
+    errors.push('join takes an array field and a string separator: {{join config.<field> ","}}')
+    return
+  }
+  checkExpression(list, scope, schema, errors)
+  if (!isPath(list) || scope.kind !== 'root' || list.depth > 0 || list.parts.length !== 2 || list.parts[0] !== 'config') {
+    errors.push('join takes a top-level config array')
+    return
+  }
+  const key = list.parts[1] ?? ''
+  const field = schema.properties && Object.hasOwn(schema.properties, key) ? schema.properties[key] : undefined
+  if (field && (field.type !== 'array' || field.items?.type === 'object' || field.items?.type === 'array')) {
+    errors.push(`join takes an array of scalars, config.${key} is not one`)
+  }
 }
 
 function hasHash(hash: hbs.AST.Hash | undefined): boolean {

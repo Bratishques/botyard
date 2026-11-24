@@ -75,8 +75,16 @@ describe('outbox relay', () => {
 
     const finished: string[] = []
     const [slowCount, fastCount] = await Promise.all([
-      slow.tick().then((count) => (finished.push('slow'), count)),
-      firstSelected.then(() => fast.tick()).then((count) => (finished.push('fast'), count)),
+      slow.tick().then((count) => {
+        finished.push('slow')
+        return count
+      }),
+      firstSelected
+        .then(() => fast.tick())
+        .then((count) => {
+          finished.push('fast')
+          return count
+        }),
     ])
     await second.close()
 

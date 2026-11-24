@@ -21,8 +21,11 @@ export interface Broker {
    * канала, обрыв сети. Переподключения нет: процесс выходит, его перезапускает оркестратор.
    */
   readonly lost: Promise<Error>
-  /** Собирает `messageId` сообщений, которые брокер вернул (`mandatory`, ни одной очереди), до `stop()` */
-  trackReturns(): { readonly returned: ReadonlySet<string>; stop(): void }
+  /**
+   * Собирает возвращённые брокером (`mandatory`, ни одной очереди) сообщения из `ids` до `stop()`. Фильтр по id:
+   * запоздалый возврат прошлой порции не откатит следующую
+   */
+  trackReturns(ids: ReadonlySet<string>): { readonly returned: ReadonlySet<string>; stop(): void }
   close(): Promise<void>
 }
 
@@ -35,16 +38,21 @@ export async function connectBroker(url: string): Promise<Broker> {
   let closing = false
   let markLost: (error: Error) => void = () => {}
   const lost = new Promise<Error>((resolve) => (markLost = resolve))
-  const onClose = (what: string) => (cause?: unknown) => {
-    if (!closing) markLost(new BrokerLostError(`rabbitmq ${what} closed`, { cause }))
+  // `close` приходит без причины: её приносит предшествующее `error` (404 NOT_FOUND, 320 CONNECTION_FORCED…).
+  // Без слушателя `error` amqplib бросает из emit и не доводит закрытие канала до конца —
+  // waitForConfirms тогда не завершается никогда
+  let cause: unknown
+  const remember = (error: unknown) => {
+    cause ??= error
   }
-  // Без слушателя `error` amqplib бросает из emit и не доводит закрытие канала до конца:
-  // waitForConfirms тогда не завершается никогда. Сама ошибка придёт в `close`
-  connection.on('error', () => undefined)
+  const onClose = (what: string) => (error?: unknown) => {
+    if (!closing) markLost(new BrokerLostError(`rabbitmq ${what} closed`, { cause: error ?? cause }))
+  }
+  connection.on('error', remember)
   connection.on('close', onClose('connection'))
 
   const channel = await connection.createConfirmChannel()
-  channel.on('error', () => undefined)
+  channel.on('error', remember)
   channel.on('close', onClose('channel'))
   const returnListeners = new Set<(message: Message) => void>()
   channel.on('return', (message: Message) => {
@@ -60,9 +68,12 @@ export async function connectBroker(url: string): Promise<Broker> {
   return {
     channel,
     lost,
-    trackReturns() {
+    trackReturns(ids) {
       const returned = new Set<string>()
-      const listener = (message: Message) => returned.add(String(message.properties.messageId))
+      const listener = (message: Message) => {
+        const id = String(message.properties.messageId)
+        if (ids.has(id)) returned.add(id)
+      }
       returnListeners.add(listener)
 
       return { returned, stop: () => returnListeners.delete(listener) }
