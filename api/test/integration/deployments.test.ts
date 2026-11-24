@@ -17,6 +17,7 @@ import { SecretBox } from '../../src/shared/crypto/secret-box'
 import { UnitOfWork } from '../../src/shared/database/unit-of-work'
 import { Idempotency, IdempotencyConflictError } from '../../src/shared/idempotency/idempotency'
 import { Outbox, OutboxTopic } from '../../src/shared/outbox/outbox'
+import { FakeTradingAccounts } from './fakes'
 import { db } from './setup'
 
 const unitOfWork = new UnitOfWork(db)
@@ -27,6 +28,7 @@ const customers = new CustomerUseCases(
   new SecretBox([new LocalKeyEncryptionKey(1, randomBytes(32))]),
   unitOfWork,
   audit,
+  new FakeTradingAccounts(),
 )
 const idempotency = new Idempotency(unitOfWork)
 

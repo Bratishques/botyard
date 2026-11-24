@@ -15,6 +15,7 @@ import {
   normalizeCustomerName,
   type TradingMode,
 } from '../domain/customer'
+import { TRADING_ACCOUNTS, type TradingAccounts, TradingAccountsUnavailableError } from '../domain/trading-accounts'
 
 /** Контекст токена: клиент и режим. Токен песочницы не откроется как боевой и наоборот */
 function tokenContext(customerId: string, mode: TradingMode) {
@@ -35,6 +36,7 @@ export class CustomerUseCases {
     private readonly box: SecretBox,
     private readonly unitOfWork: UnitOfWork,
     private readonly audit: AuditLog,
+    @Inject(TRADING_ACCOUNTS) private readonly accounts: TradingAccounts,
   ) {}
 
   list(): Promise<Customer[]> {
@@ -53,6 +55,7 @@ export class CustomerUseCases {
   async create(input: { name: string; accountId: string; token: string }, actor: string): Promise<Customer> {
     const name = normalizeCustomerName(input.name)
     const accountId = normalizeAccountId(input.accountId)
+    await this.verify(input.token, 'sandbox', accountId)
     const id = Bun.randomUUIDv7()
     const tokenSealed = await this.box.seal(input.token, tokenContext(id, 'sandbox'))
     const tokenHint = secretHint(input.token)
@@ -86,6 +89,8 @@ export class CustomerUseCases {
     if (input.accountId !== undefined && normalizeAccountId(input.accountId) !== current.accountId) {
       if (!current.sandbox) confirmLive(current, input.confirmName)
       changes.accountId = normalizeAccountId(input.accountId)
+      // Новый счёт должен принадлежать токену клиента в его режиме
+      await this.verify(await this.revealToken(current), modeOf(current), changes.accountId)
     }
     if (Object.keys(changes).length === 0) return current
 
@@ -100,6 +105,7 @@ export class CustomerUseCases {
   /** Новый токен того же режима */
   async rotateToken(id: string, input: { version: number; token: string }, actor: string): Promise<Customer> {
     const current = await this.active(id, input.version)
+    await this.verify(input.token, modeOf(current), current.accountId)
     const tokenSealed = await this.box.seal(input.token, tokenContext(id, modeOf(current)))
 
     return this.write(id, input.version, { tokenSealed, tokenHint: secretHint(input.token) }, actor, 'customer.token_rotated', {
@@ -121,6 +127,7 @@ export class CustomerUseCases {
     if (!current.sandbox) throw new CustomerError(CustomerErrorCode.ALREADY_IN_MODE, 'customer is already live')
     confirmLive(current, input.confirmName)
     const accountId = normalizeAccountId(input.accountId)
+    await this.verify(input.token, 'live', accountId)
     const tokenSealed = await this.box.seal(input.token, tokenContext(id, 'live'))
 
     return this.switchMode(id, () =>
@@ -140,6 +147,7 @@ export class CustomerUseCases {
     const current = await this.active(id, input.version)
     if (current.sandbox) throw new CustomerError(CustomerErrorCode.ALREADY_IN_MODE, 'customer is already in the sandbox')
     const accountId = normalizeAccountId(input.accountId)
+    await this.verify(input.token, 'sandbox', accountId)
     const tokenSealed = await this.box.seal(input.token, tokenContext(id, 'sandbox'))
 
     return this.switchMode(id, () =>
@@ -187,6 +195,42 @@ export class CustomerUseCases {
 
       return this.write(id, version, { status: CustomerStatus.ARCHIVED }, actor, 'customer.archived', {})
     })
+  }
+
+  /**
+   * Токен и счёт у брокера — до записи, вне транзакции (сетевой вызов). Боевой режим без проверки не
+   * включается: выключенная проверка (разработка, тесты) пропускает только песочницу.
+   */
+  private async verify(token: string, mode: TradingMode, accountId: string): Promise<void> {
+    let result: Awaited<ReturnType<TradingAccounts['check']>>
+    try {
+      result = await this.accounts.check(token, mode, accountId)
+    } catch (error) {
+      if (error instanceof TradingAccountsUnavailableError) {
+        throw new CustomerError(CustomerErrorCode.BROKER_UNAVAILABLE, 'T-Invest is unavailable, the token was not checked: retry later')
+      }
+      throw error
+    }
+    if (result.ok) return
+
+    switch (result.reason) {
+      case 'DISABLED':
+        if (mode === 'sandbox') return
+        throw new CustomerError(CustomerErrorCode.LIVE_CHECK_DISABLED, 'live mode needs the T-Invest token check, it is disabled')
+      case 'TOKEN_REJECTED':
+        throw new CustomerError(CustomerErrorCode.TOKEN_REJECTED, `T-Invest rejected the token for ${mode} mode`)
+      case 'ACCOUNT_NOT_FOUND':
+        throw new CustomerError(CustomerErrorCode.ACCOUNT_NOT_FOUND, `the token has no open ${mode} account with this id`)
+      case 'READ_ONLY':
+        throw new CustomerError(CustomerErrorCode.TOKEN_READ_ONLY, 'the token is read-only for this account: robots could not place orders')
+      case 'ACCOUNT_NOT_TRADABLE':
+        throw new CustomerError(CustomerErrorCode.ACCOUNT_NOT_TRADABLE, 'only a brokerage account or an IIS can be traded by robots')
+      case 'LIVE_TOKEN_IN_SANDBOX':
+        throw new CustomerError(
+          CustomerErrorCode.LIVE_TOKEN_IN_SANDBOX,
+          'the token has full access to a real account: use a sandbox or read-only token for the sandbox',
+        )
+    }
   }
 
   /** Клиент для изменения: существует, не в архиве, версия совпадает */

@@ -18,8 +18,14 @@ import { CurrentOperator } from '../../auth/presentation/session.guard'
 import { CustomerUseCases } from '../application/customer-use-cases'
 import { type Customer, CustomerError, CustomerErrorCode, modeOf, type TradingMode } from '../domain/customer'
 
-// Токены T-Invest длинные (t.…); короче 16 — заведомо не токен, а подсказка открыла бы большую его долю
-const token = z.string().trim().min(16).max(512)
+// Токены T-Invest длинные (t.…); короче 16 — заведомо не токен, а подсказка открыла бы большую его долю.
+// Печатные ASCII без пробелов: токен уходит в заголовок Authorization
+const token = z
+  .string()
+  .trim()
+  .min(16)
+  .max(512)
+  .regex(/^[\x21-\x7e]+$/, 'must be printable ASCII without spaces')
 const version = z.number().int().positive()
 
 const createSchema = z.object({ name: z.string().max(200), accountId: z.string().max(100), token }).strict()
@@ -73,6 +79,13 @@ const STATUS: Record<CustomerErrorCode, number> = {
   [CustomerErrorCode.INVALID_NAME]: HttpStatus.BAD_REQUEST,
   [CustomerErrorCode.INVALID_ACCOUNT]: HttpStatus.BAD_REQUEST,
   [CustomerErrorCode.LIVE_CONFIRMATION_REQUIRED]: HttpStatus.UNPROCESSABLE_ENTITY,
+  [CustomerErrorCode.TOKEN_REJECTED]: HttpStatus.UNPROCESSABLE_ENTITY,
+  [CustomerErrorCode.ACCOUNT_NOT_FOUND]: HttpStatus.UNPROCESSABLE_ENTITY,
+  [CustomerErrorCode.TOKEN_READ_ONLY]: HttpStatus.UNPROCESSABLE_ENTITY,
+  [CustomerErrorCode.ACCOUNT_NOT_TRADABLE]: HttpStatus.UNPROCESSABLE_ENTITY,
+  [CustomerErrorCode.LIVE_TOKEN_IN_SANDBOX]: HttpStatus.UNPROCESSABLE_ENTITY,
+  [CustomerErrorCode.LIVE_CHECK_DISABLED]: HttpStatus.CONFLICT,
+  [CustomerErrorCode.BROKER_UNAVAILABLE]: HttpStatus.SERVICE_UNAVAILABLE,
 }
 
 async function http<T>(work: Promise<T>): Promise<T> {

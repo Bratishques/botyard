@@ -359,6 +359,40 @@ describe('развёртывания по HTTP', () => {
   })
 })
 
+describe('клиенты по HTTP', () => {
+  test('токен с пробелом или кириллицей — 400 VALIDATION_FAILED без значения токена', async () => {
+    const cookie = await session()
+    for (const token of ['t.with space 0123456789', 't.кириллица-0123456789']) {
+      const response = await fetch(
+        `${base}/customers`,
+        json({ name: `t-${crypto.randomUUID().slice(0, 8)}`, accountId: 'acc', token }, cookie),
+      )
+      const text = await response.text()
+      expect(response.status).toBe(400)
+      expect(text).toContain('VALIDATION_FAILED')
+      expect(text).not.toContain(token)
+    }
+  })
+
+  test('проверка токенов выключена (тесты): боевой режим — 409 CUSTOMER_LIVE_CHECK_DISABLED, клиент в песочнице', async () => {
+    const cookie = await session()
+    const name = `live-${crypto.randomUUID().slice(0, 8)}`
+    const created = await fetch(
+      `${base}/customers`,
+      json({ name, accountId: 'sandbox-account', token: 't.sandbox-token-0123456789abcdef' }, cookie),
+    )
+    const customer = (await created.json()) as { id: string; version: number }
+
+    const live = await fetch(
+      `${base}/customers/${customer.id}/live`,
+      json({ version: customer.version, token: 't.live-token-0123456789abcdef', accountId: '2000000001', confirmName: name }, cookie),
+    )
+
+    expect(live.status).toBe(409)
+    expect(((await live.json()) as { code: string }).code).toBe('CUSTOMER_LIVE_CHECK_DISABLED')
+  })
+})
+
 describe('назначения по HTTP', () => {
   test('создание, чтение и правка: ключ не возвращается, старая версия — 409', async () => {
     const cookie = await session()

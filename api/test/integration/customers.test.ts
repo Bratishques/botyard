@@ -3,16 +3,19 @@ import { randomBytes } from 'node:crypto'
 import { CustomerUseCases } from '../../src/modules/customers/application/customer-use-cases'
 import { type Customer, type CustomerChanges, CustomerErrorCode } from '../../src/modules/customers/domain/customer'
 import { PostgresCustomerRepository } from '../../src/modules/customers/infrastructure/postgres-customer.repository'
+import { DisabledTradingAccounts } from '../../src/modules/customers/infrastructure/tinvest-trading-accounts'
 import { AuditLog } from '../../src/shared/audit/audit'
 import { LocalKeyEncryptionKey } from '../../src/shared/crypto/key-encryption-key'
 import { SecretBox } from '../../src/shared/crypto/secret-box'
 import { UnitOfWork } from '../../src/shared/database/unit-of-work'
+import { FakeTradingAccounts } from './fakes'
 import { db } from './setup'
 
 const unitOfWork = new UnitOfWork(db)
 const box = new SecretBox([new LocalKeyEncryptionKey(1, randomBytes(32))])
 const repository = new PostgresCustomerRepository(unitOfWork)
-const customers = new CustomerUseCases(repository, box, unitOfWork, new AuditLog(unitOfWork))
+const broker = new FakeTradingAccounts()
+const customers = new CustomerUseCases(repository, box, unitOfWork, new AuditLog(unitOfWork), broker)
 
 const SANDBOX_TOKEN = 't.sandbox-token-0123456789abcdef'
 const LIVE_TOKEN = 't.live-token-0123456789abcdefghij'
@@ -53,7 +56,7 @@ function gated(participants: number): CustomerUseCases {
     }
   })(unitOfWork)
 
-  return new CustomerUseCases(gatedRepository, box, unitOfWork, new AuditLog(unitOfWork))
+  return new CustomerUseCases(gatedRepository, box, unitOfWork, new AuditLog(unitOfWork), broker)
 }
 
 async function actions(id: string): Promise<string[]> {
@@ -212,5 +215,128 @@ describe('клиенты', () => {
     expect(await codeOf(customers.update(created.id, { version: archived.version, name: 'x' }, 'operator:1'))).toBe(
       CustomerErrorCode.ARCHIVED,
     )
+  })
+})
+
+describe('проверка токена и счёта у брокера', () => {
+  const count = async (name: string) => (await db.selectFrom('customer').select('id').where('name', '=', name).execute()).length
+
+  test('создание: отклонённый токен, чужой счёт, недоступный брокер — понятный код и ничего не записано', async () => {
+    const rejected = 't.rejected-token-0123456789abcdef'
+    const wrongAccount = 't.wrong-account-0123456789abcdef'
+    broker.results.set(rejected, { ok: false, reason: 'TOKEN_REJECTED' })
+    broker.results.set(wrongAccount, { ok: false, reason: 'ACCOUNT_NOT_FOUND' })
+
+    const first = input({ token: rejected })
+    expect(await codeOf(customers.create(first, 'operator:1'))).toBe(CustomerErrorCode.TOKEN_REJECTED)
+    const second = input({ token: wrongAccount })
+    expect(await codeOf(customers.create(second, 'operator:1'))).toBe(CustomerErrorCode.ACCOUNT_NOT_FOUND)
+    broker.down = true
+    const third = input()
+    try {
+      expect(await codeOf(customers.create(third, 'operator:1'))).toBe(CustomerErrorCode.BROKER_UNAVAILABLE)
+    } finally {
+      broker.down = false
+    }
+
+    expect(await count(first.name)).toBe(0)
+    expect(await count(second.name)).toBe(0)
+    expect(await count(third.name)).toBe(0)
+  })
+
+  test('боевой режим проверяется на боевом контуре: токен «только чтение» — отказ, клиент остаётся в песочнице', async () => {
+    const created = await customers.create(input(), 'operator:1')
+    const readOnly = 't.read-only-live-0123456789abcdef'
+    broker.results.set(readOnly, { ok: false, reason: 'READ_ONLY' })
+    broker.asked.length = 0
+
+    expect(
+      await codeOf(
+        customers.goLive(created.id, { version: 1, token: readOnly, accountId: LIVE_ACCOUNT, confirmName: created.name }, 'operator:1'),
+      ),
+    ).toBe(CustomerErrorCode.TOKEN_READ_ONLY)
+    expect(broker.asked).toEqual([{ mode: 'live', accountId: LIVE_ACCOUNT }])
+    expect((await customers.get(created.id)).sandbox).toBe(true)
+  })
+
+  test('смена счёта проверяется текущим токеном клиента; ротация токена — новым токеном в текущем режиме', async () => {
+    const created = await customers.create(input(), 'operator:1')
+    broker.results.set(SANDBOX_TOKEN, { ok: false, reason: 'ACCOUNT_NOT_FOUND' })
+    try {
+      expect(await codeOf(customers.update(created.id, { version: 1, accountId: 'other-account' }, 'operator:1'))).toBe(
+        CustomerErrorCode.ACCOUNT_NOT_FOUND,
+      )
+    } finally {
+      broker.results.delete(SANDBOX_TOKEN)
+    }
+
+    const fresh = 't.rotated-sandbox-0123456789abcdef'
+    broker.asked.length = 0
+    const rotated = await customers.rotateToken(created.id, { version: 1, token: fresh }, 'operator:1')
+    expect(broker.asked).toEqual([{ mode: 'sandbox', accountId: SANDBOX_ACCOUNT }])
+    expect(await customers.revealToken(rotated)).toBe(fresh)
+  })
+
+  test('переплетение внутри проверки: смена счёта и ротация токена — счёт не сохраняется с токеном, которым не проверен', async () => {
+    const created = await customers.create(input(), 'operator:1')
+    const fresh = 't.rotated-in-race-0123456789abcdef'
+    broker.holdUntil(2)
+    let results: PromiseSettledResult<Customer>[]
+    try {
+      results = await Promise.allSettled([
+        customers.update(created.id, { version: 1, accountId: 'account-b' }, 'operator:1'),
+        customers.rotateToken(created.id, { version: 1, token: fresh }, 'operator:2'),
+      ])
+    } finally {
+      broker.release()
+    }
+
+    // Обе проверки прошли на одном снимке; записывается одна правка, вторая — конфликт версии
+    expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(1)
+    const rejected = results.find((result): result is PromiseRejectedResult => result.status === 'rejected')
+    expect(rejected?.reason).toMatchObject({ code: CustomerErrorCode.VERSION_CONFLICT })
+    const stored = await customers.get(created.id)
+    const token = await customers.revealToken(stored)
+    // Сочетания «новый счёт + новый токен» (никем не проверенного) не бывает
+    expect(stored.accountId === 'account-b' && token === fresh).toBe(false)
+  })
+
+  test('боевой клиент: ротация и смена счёта проверяются в боевом режиме; возврат в песочницу — в песочнице', async () => {
+    const created = await customers.create(input(), 'operator:1')
+    const live = await customers.goLive(
+      created.id,
+      { version: 1, token: LIVE_TOKEN, accountId: LIVE_ACCOUNT, confirmName: created.name },
+      'operator:1',
+    )
+
+    broker.asked.length = 0
+    const rotated = await customers.rotateToken(
+      created.id,
+      { version: live.version, token: 't.live-rotated-0123456789abcdef' },
+      'operator:1',
+    )
+    const moved = await customers.update(
+      created.id,
+      { version: rotated.version, accountId: '2000999999', confirmName: created.name },
+      'operator:1',
+    )
+    await customers.goSandbox(created.id, { version: moved.version, token: SANDBOX_TOKEN, accountId: SANDBOX_ACCOUNT }, 'operator:1')
+
+    expect(broker.asked).toEqual([
+      { mode: 'live', accountId: LIVE_ACCOUNT },
+      { mode: 'live', accountId: '2000999999' },
+      { mode: 'sandbox', accountId: SANDBOX_ACCOUNT },
+    ])
+  })
+
+  test('проверка выключена (разработка, тесты): песочница — можно, боевой режим — закрыт', async () => {
+    const offline = new CustomerUseCases(repository, box, unitOfWork, new AuditLog(unitOfWork), new DisabledTradingAccounts())
+    const created = await offline.create(input(), 'operator:1')
+
+    expect(
+      await codeOf(
+        offline.goLive(created.id, { version: 1, token: LIVE_TOKEN, accountId: LIVE_ACCOUNT, confirmName: created.name }, 'operator:1'),
+      ),
+    ).toBe(CustomerErrorCode.LIVE_CHECK_DISABLED)
   })
 })

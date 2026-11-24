@@ -1,0 +1,5 @@
+{
+  "code": 16,
+  "message": "Authentication token is missing or invalid",
+  "description": "40003"
+}
