@@ -152,4 +152,5 @@ attempt, error, requestedBy, createdAt, finishedAt }`; `step` — текущий
 - 2026-11-24 — счёт обязателен при смене режима, смена счёта боевого клиента — с подтверждением.
 - 2026-11-24 — развёртывания и операции, `Idempotency-Key`, `CUSTOMER_HAS_DEPLOYMENTS`, `tradingMode`, запрет смены
   режима клиента с роботами, start/redeploy на выключенном назначении — 422, повтор удаления из `DELETING`.
-- 2026-11-24 — воркер саги: `step` операции, stop из `FAILED`, `DEPLOYMENT_TEMPLATE_NOT_LIVE_SAFE`.
+- 2026-11-24 — воркер саги: `step` операции, stop из `FAILED`, `DEPLOYMENT_TEMPLATE_NOT_LIVE_SAFE`;
+  назначение с роботами: `DESTINATION_HAS_DEPLOYMENTS`, `DESTINATION_KEY_CANNOT_SEE_DEPLOYMENTS`.

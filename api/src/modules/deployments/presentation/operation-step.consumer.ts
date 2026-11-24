@@ -30,7 +30,7 @@ export class OperationStepConsumer {
 
   constructor(
     private readonly broker: Broker,
-    private readonly worker: OperationWorker,
+    private readonly worker: Pick<OperationWorker, 'handle'>,
     private readonly logger: Pick<Logger, 'warn' | 'error'>,
   ) {}
 

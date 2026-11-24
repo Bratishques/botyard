@@ -118,7 +118,9 @@ export class FilesystemCatalogSource implements CatalogSource {
     // Имена, которые платформа даёт роботу сама: шаблон не может их подменить
     const reserved = Object.keys(raw.config.env ?? {}).filter((name) => RESERVED_ENV.has(name))
     if (reserved.length > 0) throw invalid(folder, `config.env: ${reserved.join(', ')} is set by the platform`)
-    if (raw.config.mountPath !== undefined && path.posix.dirname(raw.config.mountPath) === path.posix.dirname(ROBOT_CA_MOUNT_PATH)) {
+    const platformDir = path.posix.dirname(ROBOT_CA_MOUNT_PATH)
+    const mountPath = raw.config.mountPath === undefined ? undefined : path.posix.normalize(raw.config.mountPath)
+    if (mountPath !== undefined && (mountPath === platformDir || mountPath.startsWith(`${platformDir}/`))) {
       throw invalid(folder, `config.mountPath: ${path.posix.dirname(ROBOT_CA_MOUNT_PATH)} is used by the platform`)
     }
 

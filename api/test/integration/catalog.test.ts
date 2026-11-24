@@ -244,6 +244,12 @@ describe('синхронизация каталога', () => {
     await expect(sync()).rejects.toThrow('/etc/ssl/botyard is used by the platform')
   })
 
+  test('имя переменной env — только по шаблону: пробел или перевод строки в имени обошли бы резерв платформы', async () => {
+    await setIn('bita', ['config', 'env', 'SSL_CERT_DIR '], '/x')
+
+    await expect(sync()).rejects.toThrow('must match pattern')
+  })
+
   test('манифест без security.verifiesTls отклоняется: автор робота обязан сказать, проверяет ли робот TLS', async () => {
     await setIn('bita', ['security'], undefined)
 

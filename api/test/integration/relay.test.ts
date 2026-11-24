@@ -96,6 +96,16 @@ describe('outbox relay', () => {
     expect(new Set(received.map((message) => message.messageId)).size).toBe(ids.length)
   })
 
+  test('отложенное сообщение не публикуется раньше available_at', async () => {
+    const id = await unitOfWork.run(() => outbox.enqueue(OutboxTopic.OPERATION_STEP, { operationId: 'later' }, { delayMs: 60_000 }))
+    const relay = new OutboxRelay(db, broker)
+
+    expect(await relay.tick()).toBe(0)
+    await sql`UPDATE outbox_message SET available_at = now() - interval '1 second' WHERE id = ${id}`.execute(db)
+    expect(await relay.tick()).toBe(1)
+    expect((await drain()).map((message) => message.messageId)).toEqual([id])
+  })
+
   test('сообщение без очереди брокер возвращает — порция откатывается и не помечается', async () => {
     await enqueue(1)
     await db.insertInto('outbox_message').values({ id: Bun.randomUUIDv7(), topic: 'nobody.listens', payload: '{}' }).execute()

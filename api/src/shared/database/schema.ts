@@ -126,6 +126,7 @@ export interface OperationTable {
   error: string | null
   requested_by: string
   lease_until: Date | null
+  lease_id: string | null
   context: ColumnType<Record<string, unknown>, string | undefined, string>
   created_at: CreatedAt
   updated_at: UpdatedAt

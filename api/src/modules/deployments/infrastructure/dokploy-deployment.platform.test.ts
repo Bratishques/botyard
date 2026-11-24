@@ -5,6 +5,7 @@ import oneFixture from '../../../../test/fixtures/dokploy/application.one.json'
 import searchFixture from '../../../../test/fixtures/dokploy/application.search.json'
 import deploymentsFixture from '../../../../test/fixtures/dokploy/deployment.all.json'
 import mountFixture from '../../../../test/fixtures/dokploy/mounts.create.json'
+import noFilePathFixture from '../../../../test/fixtures/dokploy/mounts.create.no-file-path.json'
 import unauthorizedFixture from '../../../../test/fixtures/dokploy/unauthorized.json'
 import { DEFAULT_DOKPLOY_CLIENT, DokployClient } from '../../../shared/dokploy/dokploy.client'
 import { PlatformError, type PlatformTarget } from '../domain/deployment-platform'
@@ -77,6 +78,8 @@ describe('Dokploy как платформа развёртывания', () => {
           { ...app, applicationId: 'other-env', environmentId: 'elsewhere' },
           { ...app, applicationId: 'longer-name', appName: 'by-fixture000012-abc123' },
           { ...app, applicationId: 'prefix-only', appName: 'by-fixture00001x-abc123' },
+          { ...app, applicationId: 'odd-tail', appName: 'by-fixture00001-ABC_1' },
+          { ...app, applicationId: 'two-tails', appName: 'by-fixture00001-abc-def' },
         ],
       },
     })
@@ -108,7 +111,10 @@ describe('Dokploy как платформа развёртывания', () => {
     if (!existing) throw new Error('fixture has no mounts')
     reply('application.one', {
       status: 200,
-      body: { ...oneFixture, mounts: [existing, { ...existing, mountId: 'stale', mountPath: '/opt/old/config.toml' }] },
+      body: {
+        ...oneFixture,
+        mounts: [existing, { ...existing, mountId: 'twin' }, { ...existing, mountId: 'stale', mountPath: '/opt/old/config.toml' }],
+      },
     })
     reply('mounts.update', { status: 200, body: mountFixture })
     reply('mounts.create', { status: 200, body: mountFixture })
@@ -142,7 +148,8 @@ describe('Dokploy как платформа развёртывания', () => {
         type: 'file',
       }),
     ])
-    expect(sent('mounts.remove').map((call) => call.body)).toEqual([{ mountId: 'stale' }])
+    // Лишний по пути и второй на тот же путь (след шага, выполненного дважды) — удалены
+    expect(sent('mounts.remove').map((call) => call.body)).toEqual([{ mountId: 'stale' }, { mountId: 'twin' }])
   })
 
   test('последний деплой — по времени создания; пусто — null', async () => {
@@ -155,13 +162,32 @@ describe('Dokploy как платформа развёртывания', () => {
     expect(await platform().latestDeployment(target, 'app-1')).toBeNull()
   })
 
-  test('удаление уже удалённого (404 Service not found) — успех; ключ не принят — отказ без повтора', async () => {
+  test('удаление уже удалённого (404 Service not found) — успех; 404 от прокси — нет; ключ не принят — отказ', async () => {
     reply('application.delete', { status: 404, body: notFoundFixture })
     await platform().deleteApp(target, 'gone')
+
+    // Traefik перед Dokploy, пока тот перезапускается: робот, может быть, жив
+    reply('application.delete', { status: 404, body: { message: 'page not found' } })
+    expect((await failure(platform().deleteApp(target, 'app-1'))).retryable).toBe(false)
 
     reply('application.delete', { status: 401, body: unauthorizedFixture })
     const rejected = await failure(platform().deleteApp(target, 'app-1'))
     expect(rejected.retryable).toBe(false)
+  })
+
+  test('file mount без filePath Dokploy отклоняет (400) — отказ, а не повтор', async () => {
+    reply('application.one', { status: 200, body: { ...oneFixture, mounts: [] } })
+    reply('mounts.create', { status: 400, body: noFilePathFixture })
+
+    const error = await failure(
+      platform().configure(target, 'app-1', {
+        source: { gitUrl: 'https://example.com/r.git', ref: 'main' },
+        build: { dockerfile: 'Dockerfile', context: '.' },
+        runtime: { env: {}, files: [{ mountPath: '/opt/x/config.toml', content: 'a = 1' }] },
+      }),
+    )
+    expect(error.retryable).toBe(false)
+    expect(error.message).toContain('File path is required')
   })
 
   test('5xx и таймаут изменения — временная ошибка (исход неизвестен), без повтора внутри клиента', async () => {

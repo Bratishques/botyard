@@ -28,12 +28,20 @@ const SAFE_ENV_VALUE = /^[A-Za-z0-9_.,:/+=@-]*$/
  * - TOML: строки в контексте экранируются как базовые строки TOML, результат разбирается `Bun.TOML.parse`;
  * - каждому роботу платформа добавляет корень сертификатов T-Invest файлом и `SSL_CERT_FILE`.
  */
+/** Переменные, доступные шаблону, — и только они (template-variables.ts в каталоге проверяет те же имена) */
+interface RenderContext {
+  readonly config: Readonly<Record<string, unknown>>
+  readonly customer: { readonly accountId: string; readonly sandbox: boolean }
+  readonly secret: { readonly tinvestToken: string }
+  readonly platform: { readonly tinvestAddress: string }
+}
+
 @Injectable()
 export class HandlebarsConfigRenderer implements ConfigRenderer {
   private readonly handlebars = createHandlebars()
 
   render(input: RenderInput): RobotRuntime {
-    const context = {
+    const context: RenderContext = {
       config: input.config,
       customer: { accountId: input.customer.accountId, sandbox: input.customer.sandbox },
       secret: { tinvestToken: input.token },
@@ -56,7 +64,7 @@ export class HandlebarsConfigRenderer implements ConfigRenderer {
     return { env, files }
   }
 
-  private renderFile(input: RenderInput, context: Record<string, unknown>): RobotFile {
+  private renderFile(input: RenderInput, context: RenderContext): RobotFile {
     const { mountPath, template } = input.manifest.config
     const source = template === undefined ? undefined : input.files[template]
     if (mountPath === undefined || source === undefined) {
@@ -66,7 +74,7 @@ export class HandlebarsConfigRenderer implements ConfigRenderer {
       throw new RenderError(RenderErrorCode.TEMPLATE_FAILED, `${mountPath}: only TOML files are supported`)
     }
 
-    const content = this.apply(source, escapeStrings(context, tomlString), template ?? mountPath)
+    const content = this.apply(source, tomlContext(context), template ?? mountPath)
     try {
       Bun.TOML.parse(content)
     } catch {
@@ -77,7 +85,7 @@ export class HandlebarsConfigRenderer implements ConfigRenderer {
     return { mountPath, content }
   }
 
-  private apply(source: string, context: unknown, where: string): string {
+  private apply(source: string, context: RenderContext, where: string): string {
     try {
       return this.handlebars.compile(source, { strict: true, noEscape: true })(context)
     } catch (error) {
@@ -99,13 +107,22 @@ function createHandlebars(): typeof Handlebars {
   return instance
 }
 
-/** Копия контекста, где каждая строка экранирована; числа и булевы остаются собой */
-function escapeStrings(value: unknown, escapeText: (text: string) => string): unknown {
-  if (typeof value === 'string') return escapeText(value)
-  if (Array.isArray(value)) return value.map((item) => escapeStrings(item, escapeText))
-  if (typeof value === 'object' && value !== null) {
-    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, escapeStrings(item, escapeText)]))
+/** Контекст для TOML: каждая строка экранирована как базовая строка TOML; числа и булевы остаются собой */
+function tomlContext(context: RenderContext): RenderContext {
+  return {
+    config: Object.fromEntries(Object.entries(context.config).map(([key, value]) => [key, escapeDeep(value)])),
+    customer: { accountId: tomlString(context.customer.accountId), sandbox: context.customer.sandbox },
+    secret: { tinvestToken: tomlString(context.secret.tinvestToken) },
+    platform: { tinvestAddress: tomlString(context.platform.tinvestAddress) },
   }
+}
+
+/** Значение конфига (JSON по схеме шаблона) с экранированными строками на любой глубине */
+function escapeDeep(value: unknown): unknown {
+  if (typeof value === 'string') return tomlString(value)
+  if (Array.isArray(value)) return value.map(escapeDeep)
+  if (typeof value === 'object' && value !== null)
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, escapeDeep(item)]))
 
   return value
 }

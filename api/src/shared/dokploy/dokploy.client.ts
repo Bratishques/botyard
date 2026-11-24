@@ -5,6 +5,7 @@ import {
   DokployRateLimitedError,
   DokployRejectedError,
   DokployResponseError,
+  DokployTimeoutError,
   DokployUnauthorizedError,
   DokployUnavailableError,
 } from './dokploy.errors'
@@ -28,6 +29,11 @@ export interface DokployClientOptions {
 export interface CallOptions {
   readonly timeoutMs?: number
   readonly signal?: AbortSignal
+  /**
+   * Таймаут — ожидаемый исход вызова, а не признак лежащего адресата (`application.start` ждёт, пока сервис
+   * сойдётся): он не засчитывается цепи и не закрывает Dokploy для остальных операций
+   */
+  readonly timeoutIsNotFailure?: boolean
 }
 
 export const DEFAULT_DOKPLOY_CLIENT: DokployClientOptions = { timeoutMs: 10_000, retry: DEFAULT_RETRY, breaker: DEFAULT_BREAKER }
@@ -92,10 +98,15 @@ export class DokployClient {
 
   /** Изменение без нужного ответа (Dokploy отвечает `true` или пустым телом): тело не читается */
   async command(target: DokployTarget, method: string, body: Record<string, unknown>, options: CallOptions = {}): Promise<void> {
-    await this.guarded(target, method, async () => {
-      const response = await this.post(target, method, body, options)
-      await response.body?.cancel()
-    })
+    await this.guarded(
+      target,
+      method,
+      async () => {
+        const response = await this.post(target, method, body, options)
+        await response.body?.cancel()
+      },
+      options.timeoutIsNotFailure ? (error) => isTargetFailure(error) && !isTimeout(error) : isTargetFailure,
+    )
   }
 
   private read<S extends z.ZodType>(
@@ -128,8 +139,13 @@ export class DokployClient {
   }
 
   /** Вызов под цепью своего адреса: недоступность и непонятный ответ считаются отказом адресата */
-  private guarded<T>(target: DokployTarget, method: string, work: () => Promise<T>): Promise<T> {
-    return this.breakerFor(target.baseUrl).run(work, isTargetFailure).catch(wrapCircuitOpen(method))
+  private guarded<T>(
+    target: DokployTarget,
+    method: string,
+    work: () => Promise<T>,
+    countsAgainstTarget: (error: unknown) => boolean = isTargetFailure,
+  ): Promise<T> {
+    return this.breakerFor(target.baseUrl).run(work, countsAgainstTarget).catch(wrapCircuitOpen(method))
   }
 
   private async post(target: DokployTarget, method: string, body: Record<string, unknown>, options: CallOptions): Promise<Response> {
@@ -157,8 +173,8 @@ export class DokployClient {
       })
     } catch (error) {
       if (signal?.aborted) throw error
-      const reason = timeout.aborted ? `no answer in ${timeoutMs} ms` : 'network error'
-      throw new DokployUnavailableError(`dokploy ${method}: ${reason}`, undefined, { cause: error })
+      if (timeout.aborted) throw new DokployTimeoutError(`dokploy ${method}: no answer in ${timeoutMs} ms`, undefined, { cause: error })
+      throw new DokployUnavailableError(`dokploy ${method}: network error`, undefined, { cause: error })
     }
     if (!response.ok) throw await failure(method, response)
 
@@ -200,6 +216,10 @@ function parse<S extends z.ZodType>(method: string, schema: S, body: unknown): z
   }
 
   return parsed.data
+}
+
+function isTimeout(error: unknown): boolean {
+  return error instanceof DokployTimeoutError
 }
 
 function wrapCircuitOpen(method: string): (error: unknown) => never {

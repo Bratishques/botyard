@@ -124,7 +124,12 @@ export class DokployDeploymentPlatform implements DeploymentPlatform {
 
   async start(target: PlatformTarget, appId: string): Promise<void> {
     await call('application.start', () =>
-      this.dokploy.command(connection(target), 'application.start', { applicationId: appId }, { timeoutMs: START_TIMEOUT_MS }),
+      this.dokploy.command(
+        connection(target),
+        'application.start',
+        { applicationId: appId },
+        { timeoutMs: START_TIMEOUT_MS, timeoutIsNotFailure: true },
+      ),
     )
   }
 
@@ -138,18 +143,26 @@ export class DokployDeploymentPlatform implements DeploymentPlatform {
     try {
       await this.dokploy.command(connection(target), 'application.delete', { applicationId: appId })
     } catch (error) {
-      if (error instanceof DokployRejectedError && error.status === 404) return
+      // Только ответ Dokploy «приложения нет». 404 бывает и у Traefik перед ним (Dokploy перезапускается) —
+      // такой ответ не повод считать робота удалённым
+      if (error instanceof DokployRejectedError && error.status === 404 && error.message.endsWith('404 Service not found')) return
       throw toPlatformError('application.delete', error)
     }
   }
 
   /**
    * Файлы робота — file mount'ы, сверка по `mountPath`: есть — перезаписать, нет — создать, лишний файл
-   * (шаблон сменил путь) — удалить, чтобы старый конфиг с токеном не остался в приложении.
+   * (шаблон сменил путь) или второй на тот же путь — удалить, чтобы старый конфиг с токеном не остался.
    */
   private async syncFiles(to: DokployTarget, appId: string, files: AppSpec['runtime']['files']): Promise<void> {
     const current = await call('application.one', () => this.dokploy.query(to, 'application.one', { applicationId: appId }, mountsSchema))
-    const existing = new Map(current.mounts.filter((mount) => mount.type === 'file').map((mount) => [mount.mountPath, mount.mountId]))
+    const existing = new Map<string, string>()
+    const duplicates: string[] = []
+    for (const mount of current.mounts.filter((candidate) => candidate.type === 'file')) {
+      // Два mount'а на один путь — след шага, выполненного дважды: лишний удаляется, в нём мог остаться старый токен
+      if (existing.has(mount.mountPath)) duplicates.push(mount.mountId)
+      else existing.set(mount.mountPath, mount.mountId)
+    }
 
     for (const file of files) {
       const body = {
@@ -164,7 +177,7 @@ export class DokployDeploymentPlatform implements DeploymentPlatform {
       else await call('mounts.create', () => this.dokploy.command(to, 'mounts.create', { ...body, serviceId: appId }))
       existing.delete(file.mountPath)
     }
-    for (const mountId of existing.values()) {
+    for (const mountId of [...existing.values(), ...duplicates]) {
       await call('mounts.remove', () => this.dokploy.command(to, 'mounts.remove', { mountId }))
     }
   }

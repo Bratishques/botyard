@@ -51,14 +51,18 @@ export const OUTCOME: Readonly<Record<OperationKind, { readonly succeeded: Deplo
   DELETE: { succeeded: 'DELETED', failed: 'DELETING' },
 }
 
-/** Нужно ли включённое назначение: выключенное принимает только остановку и удаление */
-export const NEEDS_ACTIVE_DESTINATION: Readonly<Record<OperationKind, boolean>> = {
-  PROVISION: true,
-  REDEPLOY: true,
-  START: true,
-  STOP: false,
-  DELETE: false,
-}
+/**
+ * Шаги, которым нужно включённое назначение: всё, что ведёт к запуску робота, до самого запуска. После
+ * `deploy` деплой уже идёт в Dokploy — отказ на `await_deploy` назвал бы операцию упавшей, а робот бы
+ * запустился. Остановка и удаление разрешены на выключенном назначении всегда.
+ */
+export const NEEDS_ACTIVE_DESTINATION: ReadonlySet<SagaStep> = new Set([
+  SagaStep.ENSURE_APP,
+  SagaStep.CONFIGURE,
+  SagaStep.PREPARE_DEPLOY,
+  SagaStep.DEPLOY,
+  SagaStep.START,
+])
 
 export function firstStep(kind: OperationKind): SagaStep {
   const [first] = SAGA[kind]
@@ -76,8 +80,10 @@ export function nextStep(kind: OperationKind, step: SagaStep): SagaStep | null {
   return steps[index + 1] ?? null
 }
 
+const STEPS: ReadonlySet<string> = new Set(Object.values(SagaStep))
+
 export function isSagaStep(value: string): value is SagaStep {
-  return (Object.values(SagaStep) as string[]).includes(value)
+  return STEPS.has(value)
 }
 
 /** Политика повторов шага при временной ошибке и опроса деплоя */
@@ -86,8 +92,16 @@ export const RETRY = {
   maxAttempts: 6,
   baseMs: 5_000,
   maxDelayMs: 5 * 60_000,
-  /** Шаг арендуется на это время: дольше самого долгого вызова Dokploy с запасом */
-  leaseMs: 2 * 60_000,
+  /**
+   * Шаг арендуется на это время. Худший успешный configure по таймаутам клиента — около 100 с (три записи,
+   * чтение с повторами, mount'ы); аренда с запасом в три раза
+   */
+  leaseMs: 5 * 60_000,
+  /**
+   * Пауза перед повтором ensure_app не короче этого: create, ответ на который не дошёл, мог ещё не завершиться
+   * в Dokploy, и поиск сразу после таймаута его не увидит — получится второе приложение
+   */
+  ensureAppMinDelayMs: 15_000,
   pollMs: 10_000,
   /** Деплой дольше этого — отказ операции; сборка Go-робота в песочнице занимала ~1,5 мин */
   deployDeadlineMs: 30 * 60_000,

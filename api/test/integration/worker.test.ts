@@ -117,9 +117,12 @@ class FakePlatform implements DeploymentPlatform {
     if (app) app.running = false
   }
 
+  /** Удаление «прошло», а приложение осталось (Dokploy ответил 200, но не удалил) */
+  keepOnDelete = false
+
   async deleteApp(target: PlatformTarget, appId: string): Promise<void> {
     this.record('deleteApp', target)
-    this.apps.delete(appId)
+    if (!this.keepOnDelete) this.apps.delete(appId)
   }
 }
 
@@ -132,6 +135,7 @@ const customers = new CustomerUseCases(new PostgresCustomerRepository(unitOfWork
 const destinationSecrets = new DestinationSecrets(box)
 const unusedCatalog: DokployCatalog = {
   environments: async () => [],
+  applicationIds: async () => new Set<string>(),
   servers: async () => [],
 }
 const destinations = new DestinationUseCases(
@@ -304,6 +308,15 @@ describe('воркер саги: provision', () => {
 
     expect(platform.apps.size).toBe(1)
     expect(platform.calls.filter((call) => call === 'createApp')).toHaveLength(1)
+    // Повтор поиска — не сразу: create без ответа мог ещё не завершиться в Dokploy
+    const retry = await db
+      .selectFrom('outbox_message')
+      .select(sql<number>`extract(epoch from available_at - created_at)`.as('delay'))
+      .where(sql<boolean>`payload->>'operationId' = ${operation.id}`)
+      .where(sql<boolean>`payload->>'step' = 'ensure_app'`)
+      .where(sql<boolean>`payload ? 'wake'`)
+      .executeTakeFirstOrThrow()
+    expect(Number(retry.delay)).toBeGreaterThanOrEqual(15)
     expect((await state(deployment.id, operation.id)).deployment.status).toBe('RUNNING')
   })
 
@@ -405,6 +418,46 @@ describe('воркер саги: гонки и повторная доставк
     expect(polls()).toBe(before + 1)
   })
 
+  test('опоздавший воркер ничего не пишет и после того, как ожидание сбросило номер попытки (ABA)', async () => {
+    const { operation } = await provision()
+    await db.updateTable('operation').set({ step: 'await_deploy' }).where('id', '=', operation.id).execute()
+    const late = await store.claim(operation.id, 'await_deploy', null, 60_000)
+    if ('reason' in late) throw new Error('not claimed')
+    const expire = () =>
+      db.updateTable('operation').set({ lease_until: sql<Date>`now() - interval '1 second'` }).where('id', '=', operation.id).execute()
+
+    await expire()
+    const second = await store.claim(operation.id, 'await_deploy', null, 60_000)
+    if ('reason' in second) throw new Error('not claimed')
+    expect(await store.release(second, {}, 'wake-1', { resetAttempts: true })).toBe(true)
+    const third = await store.claim(operation.id, 'await_deploy', 'wake-1', 60_000)
+    if ('reason' in third) throw new Error('not claimed')
+    expect(third.attempt).toBe(late.attempt)
+
+    expect(await store.release(late, {}, 'wake-late', { resetAttempts: true })).toBe(false)
+    const row = await db.selectFrom('operation').select(['lease_until', 'context']).where('id', '=', operation.id).executeTakeFirstOrThrow()
+    expect(row.lease_until).not.toBeNull()
+    expect(row.context).toMatchObject({ wakeNonce: 'wake-1' })
+  })
+
+  test('аренда истекла между попыткой захвата и проверкой причины — захват повторяется, команда не теряется', async () => {
+    const { operation } = await provision()
+    const racing = new (class extends PostgresOperationStore {
+      private missed = false
+      protected override async tryClaim(...args: Parameters<PostgresOperationStore['tryClaim']>) {
+        if (!this.missed) {
+          this.missed = true
+          return null
+        }
+        return super.tryClaim(...args)
+      }
+    })(unitOfWork)
+
+    const claimed = await racing.claim(operation.id, 'ensure_app', null, 60_000)
+
+    expect('reason' in claimed).toBe(false)
+  })
+
   test('воркер, у которого истекла аренда и шаг взял другой, ничего не записывает', async () => {
     const { operation } = await provision()
     const mine = await store.claim(operation.id, 'ensure_app', null, 60_000)
@@ -455,6 +508,97 @@ describe('воркер саги: гонки и повторная доставк
     await drive(workerWith(platform), removal.operation.id)
     expect((await state(deployment.id, removal.operation.id)).deployment).toMatchObject({ status: 'DELETED', dokploy_app_id: null })
     expect(platform.apps.size).toBe(0)
+  })
+
+  test('назначение выключили, пока деплой уже идёт, — операция не падает: робот в Dokploy запустится', async () => {
+    const platform = new FakePlatform()
+    platform.pollsUntilDone = 1
+    const { deployment, operation, target } = await provision()
+    const worker = workerWith(platform)
+    for (;;) {
+      const [next] = await pending(operation.id)
+      if (!next) throw new Error('no command')
+      await db.updateTable('outbox_message').set({ published_at: new Date() }).where('id', '=', next.id).execute()
+      await worker.handle(next.message)
+      if (next.message.step === 'deploy') break
+    }
+
+    await db.updateTable('destination').set({ status: 'DISABLED' }).where('id', '=', target.id).execute()
+    await drive(worker, operation.id)
+
+    expect((await state(deployment.id, operation.id)).deployment.status).toBe('RUNNING')
+  })
+
+  test('redeploy: то же приложение, конфиг перерисован, новый деплой; второго приложения нет', async () => {
+    const platform = new FakePlatform()
+    const { deployment, version } = await running(platform)
+    const [appId] = [...platform.apps.keys()]
+    if (!appId) throw new Error('no app after provision')
+
+    const redeploy = await deployments.operate(deployment.id, 'REDEPLOY', version, 'operator:1')
+    await drive(workerWith(platform), redeploy.operation.id)
+
+    expect([...platform.apps.keys()]).toEqual([appId])
+    expect(platform.calls.filter((call) => call === 'configure')).toHaveLength(2)
+    expect(platform.deployments.get(appId)?.map((item) => item.status)).toEqual(['done', 'done'])
+    expect((await state(deployment.id, redeploy.operation.id)).deployment.status).toBe('RUNNING')
+  })
+
+  test('start, который не сходится (робот падает при запуске), — две попытки, FAILED с подсказкой; затем stop из FAILED', async () => {
+    const platform = new FakePlatform()
+    const { deployment, version } = await running(platform)
+    const stop = await deployments.operate(deployment.id, 'STOP', version, 'operator:1')
+    await drive(workerWith(platform), stop.operation.id)
+    const afterStop = (await db.selectFrom('bot_deployment').select('version').where('id', '=', deployment.id).executeTakeFirstOrThrow())
+      .version
+
+    platform.failBefore.set('start', new PlatformError(true, 'dokploy application.start: no answer in 30000 ms'))
+    const start = await deployments.operate(deployment.id, 'START', afterStop, 'operator:1')
+    await drive(workerWith(platform), start.operation.id)
+    expect(platform.calls.filter((call) => call === 'start')).toHaveLength(2)
+    const failed = await state(deployment.id, start.operation.id)
+    expect(failed.deployment.status).toBe('FAILED')
+    expect(failed.operation.error).toContain('the robot may be crashing on start')
+
+    const afterStart = (await db.selectFrom('bot_deployment').select('version').where('id', '=', deployment.id).executeTakeFirstOrThrow())
+      .version
+    const rescue = await deployments.operate(deployment.id, 'STOP', afterStart, 'operator:1')
+    await drive(workerWith(platform), rescue.operation.id)
+    expect((await state(deployment.id, rescue.operation.id)).deployment.status).toBe('STOPPED')
+  })
+
+  test('текст ошибки Dokploy с токеном и ключом не попадает в операцию и аудит', async () => {
+    const platform = new FakePlatform()
+    platform.failBefore.set(
+      'configure',
+      new PlatformError(
+        false,
+        `dokploy mounts.create: 400 Error Failed query: insert into mount params: token = "${TOKEN}", key ${DOKPLOY_KEY}`,
+      ),
+    )
+    const { deployment, operation } = await provision()
+
+    await drive(workerWith(platform), operation.id)
+
+    const stored = await state(deployment.id, operation.id)
+    expect(stored.operation.error).toContain('<secret>')
+    expect(JSON.stringify(stored)).not.toContain(TOKEN)
+    expect(JSON.stringify(stored)).not.toContain(DOKPLOY_KEY)
+    const audit = await db.selectFrom('audit_event').select('payload').where('target_id', '=', deployment.id).execute()
+    expect(JSON.stringify(audit)).not.toContain(TOKEN)
+  })
+
+  test('после удаления приложение всё ещё находится — не DELETED: повторы, затем удаление можно повторить', async () => {
+    const platform = new FakePlatform()
+    const { deployment, version } = await running(platform)
+    platform.keepOnDelete = true
+
+    const removal = await deployments.operate(deployment.id, 'DELETE', version, 'operator:1')
+    await drive(workerWith(platform), removal.operation.id)
+
+    const result = await state(deployment.id, removal.operation.id)
+    expect(result.deployment.status).toBe('DELETING')
+    expect(result.operation.error).toContain('still present after delete')
   })
 
   test('удаление находит и приложение, созданное без ответа (по appName), — удаляются оба следа', async () => {

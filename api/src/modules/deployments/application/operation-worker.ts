@@ -1,6 +1,8 @@
 import { Inject, Injectable, Logger } from '@nestjs/common'
 import { AuditLog } from '../../../shared/audit/audit'
+import { SecretBoxError } from '../../../shared/crypto/secret-box'
 import { UnitOfWork } from '../../../shared/database/unit-of-work'
+import { redactString } from '../../../shared/observability/redact'
 import { Outbox, OutboxTopic } from '../../../shared/outbox/outbox'
 import { TINVEST_ADDRESS } from '../../../shared/tinvest/tinvest'
 import { CATALOG_REPOSITORY, type CatalogRepository } from '../../catalog/domain/catalog'
@@ -51,7 +53,7 @@ const TERMINAL_FAILURE = new Set(['error', 'cancelled'])
  *
  * - Повторная доставка шага, пока он арендован, не вызывает Dokploy второй раз: сообщение откладывается
  *   до конца аренды; устаревшее (шаг уже другой, операция завершена) отбрасывается.
- * - Воркер, потерявший аренду, ничего не запишет: все записи — по шагу и номеру попытки.
+ * - Воркер, потерявший аренду, ничего не запишет: все записи — по шагу и идентификатору аренды.
  * - Перед вызовами Dokploy заново сверяется основание: операция всё ещё активна у развёртывания,
  *   назначение не выключено (для запуска), режим клиента совпадает с режимом развёртывания.
  * - Токен клиента и ключ Dokploy открываются только на время шага и не логируются.
@@ -89,22 +91,25 @@ export class OperationWorker {
       return
     }
 
+    // Секреты, открытые для шага: ими вычищается текст ошибки перед записью в операцию и аудит
+    const secrets: string[] = []
     let outcome: StepOutcome
     try {
-      outcome = await this.execute(claimed)
+      outcome = await this.execute(claimed, secrets)
     } catch (error) {
-      outcome = this.outcomeOfError(claimed, error)
+      outcome = this.outcomeOfError(claimed, error, secrets)
     }
     await this.apply(claimed, outcome)
   }
 
-  private async execute(claimed: ClaimedStep): Promise<StepOutcome> {
+  private async execute(claimed: ClaimedStep, secrets: string[]): Promise<StepOutcome> {
     const deployment = await this.deployments.findById(claimed.deploymentId)
     if (!deployment || deployment.activeOperationId !== claimed.operationId) {
       throw new StepFailure('the operation is no longer active for this deployment')
     }
     const { destination, apiKey } = await this.destinations.connection(deployment.destinationId)
-    if (destination.status === 'DISABLED' && NEEDS_ACTIVE_DESTINATION[claimed.kind]) {
+    secrets.push(apiKey)
+    if (destination.status === 'DISABLED' && NEEDS_ACTIVE_DESTINATION.has(claimed.step)) {
       throw new StepFailure('the destination is disabled')
     }
     const target: PlatformTarget = {
@@ -119,7 +124,7 @@ export class OperationWorker {
       case SagaStep.ENSURE_APP:
         return this.ensureApp(target, deployment, context)
       case SagaStep.CONFIGURE:
-        await this.configure(target, deployment)
+        await this.configure(target, deployment, secrets)
         return { type: 'next', context }
       case SagaStep.PREPARE_DEPLOY: {
         const latest = await this.platform.latestDeployment(target, appIdOf(deployment))
@@ -161,7 +166,7 @@ export class OperationWorker {
     return { type: 'next', context, dokployAppId: app.id }
   }
 
-  private async configure(target: PlatformTarget, deployment: Deployment): Promise<void> {
+  private async configure(target: PlatformTarget, deployment: Deployment, secrets: string[]): Promise<void> {
     const customer = await this.customers.get(deployment.customerId)
     if (customer.status !== 'ACTIVE') throw new StepFailure('the customer is archived')
     if (modeOf(customer) !== deployment.tradingMode) {
@@ -169,13 +174,19 @@ export class OperationWorker {
     }
     const version = await this.catalog.findVersion(deployment.templateId, deployment.templateVersion)
     if (!version) throw new StepFailure(`template version ${deployment.templateId}@${deployment.templateVersion} is missing`)
+    // Создание уже не пускает такого робота в боевой режим; здесь — для развёртываний, созданных раньше правила
+    if (deployment.tradingMode === 'live' && version.manifest.security?.verifiesTls !== true) {
+      throw new StepFailure('this robot does not verify the T-Invest certificate and runs only in the sandbox')
+    }
 
+    const token = await this.customers.revealToken(customer)
+    secrets.push(token)
     const runtime = this.renderer.render({
       manifest: version.manifest,
       files: version.files,
       config: deployment.config,
       customer: { accountId: customer.accountId, sandbox: customer.sandbox },
-      token: await this.customers.revealToken(customer),
+      token,
       tinvestAddress: TINVEST_ADDRESS[deployment.tradingMode],
     })
     await this.platform.configure(target, appIdOf(deployment), {
@@ -221,15 +232,21 @@ export class OperationWorker {
     const ids = new Set((await this.platform.findApps(target, deployment.appName)).map((app) => app.id))
     if (deployment.dokployAppId) ids.add(deployment.dokployAppId)
     for (const id of ids) await this.platform.deleteApp(target, id)
+    // DELETED записывается, только если поиск подтвердил: робота с токеном в Dokploy больше нет
+    const left = await this.platform.findApps(target, deployment.appName)
+    if (left.length > 0) throw new PlatformError(true, `${left.length} Dokploy application(s) still present after delete`)
 
     return { type: 'next', context, dokployAppId: null }
   }
 
-  private outcomeOfError(claimed: ClaimedStep, error: unknown): StepOutcome {
-    if (error instanceof StepFailure || error instanceof RenderError) return { type: 'fail', error: error.message }
+  private outcomeOfError(claimed: ClaimedStep, error: unknown, secrets: readonly string[]): StepOutcome {
+    // Ключ назначения не открывается — мастер-ключ или конверт не те; повтор этого не исправит
+    if (error instanceof StepFailure || error instanceof RenderError || error instanceof SecretBoxError) {
+      return { type: 'fail', error: scrub(error.message, secrets) }
+    }
 
     const retryable = !(error instanceof PlatformError) || error.retryable
-    const reason = error instanceof Error ? error.message : 'step failed'
+    const reason = scrub(error instanceof Error ? error.message : 'step failed', secrets)
     if (!retryable) return { type: 'fail', error: reason }
     if (claimed.attempt >= maxAttempts(claimed.step)) {
       // start в Dokploy ждёт, пока сервис сойдётся: робот, падающий при запуске, не сходится никогда
@@ -242,7 +259,8 @@ export class OperationWorker {
     }
 
     const retryAfterMs = error instanceof PlatformError ? error.retryAfterMs : undefined
-    return { type: 'retry', delayMs: retryDelayMs(claimed.attempt, Math.random, retryAfterMs), reason }
+    const floor = claimed.step === SagaStep.ENSURE_APP ? RETRY.ensureAppMinDelayMs : 0
+    return { type: 'retry', delayMs: Math.max(floor, retryDelayMs(claimed.attempt, Math.random, retryAfterMs)), reason }
   }
 
   private async apply(claimed: ClaimedStep, outcome: StepOutcome): Promise<void> {
@@ -313,6 +331,21 @@ export class OperationWorker {
     })
   }
 }
+
+/**
+ * Текст ошибки для операции, ответа API и неизменяемого аудита. Dokploy отвечает на сбой своей базы текстом
+ * запроса с параметрами — там бывает содержимое файла робота с токеном. Поэтому: открытые для шага секреты
+ * вырезаются дословно, остальное — маска логов (`t.…`, ключи), длина ограничена.
+ */
+function scrub(message: string, secrets: readonly string[]): string {
+  let text = message
+  for (const secret of secrets) if (secret.length >= 4) text = text.split(secret).join('<secret>')
+  text = redactString(text)
+
+  return text.length > MAX_ERROR_LENGTH ? `${text.slice(0, MAX_ERROR_LENGTH)}…` : text
+}
+
+const MAX_ERROR_LENGTH = 500
 
 function appIdOf(deployment: Deployment): string {
   if (!deployment.dokployAppId) throw new StepFailure('the deployment has no Dokploy application yet')

@@ -15,8 +15,12 @@ export interface TemplateManifest {
     readonly mountPath?: string
     readonly template?: string
   }
-  /** `verifiesTls: false` — робот не проверяет сертификат T-Invest: только песочница */
-  readonly security: { readonly verifiesTls: boolean }
+  /**
+   * `verifiesTls: false` — робот не проверяет сертификат T-Invest: только песочница. В новых манифестах поле
+   * обязательно (схема каталога); у версий, синхронизированных до его появления, его нет — такие считаются
+   * не проверяющими
+   */
+  readonly security?: { readonly verifiesTls: boolean }
   readonly metrics?: { readonly port: number; readonly path: string }
   readonly notes?: readonly string[]
 }

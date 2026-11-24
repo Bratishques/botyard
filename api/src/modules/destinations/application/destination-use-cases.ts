@@ -166,7 +166,33 @@ export class DestinationUseCases {
     }
     if (Object.keys(changes).length === 0) return current
 
+    // Новый ключ должен видеть приложения роботов этого назначения: Dokploy показывает пользователю только
+    // его приложения, и сага с ключом другого пользователя не нашла бы роботов — создала бы второго
+    // при redeploy, а удаление сочло бы робота удалённым
+    const relocated = changes.baseUrl !== undefined || changes.environmentId !== undefined || changes.serverId !== undefined
+    // Переезд с роботами запрещён и так (ниже, под блокировкой) — видимость для него не проверяется
+    const keyChanged = input.apiKey !== undefined && !relocated
+    let visible: Set<string> | null = null
+    if (keyChanged && input.apiKey !== undefined && (await this.repository.liveApplicationIds(id)).length > 0) {
+      visible = await this.catalog.applicationIds(baseUrl, input.apiKey, environmentId).catch((error: unknown) => {
+        throw toDestinationError(error)
+      })
+      assertVisible(await this.repository.liveApplicationIds(id), visible)
+    }
+
     return this.unitOfWork.run(async () => {
+      // Роботы назначения живут по прежнему адресу и в прежнем окружении: сага ищет их там. Переезд назначения
+      // с живыми роботами оставил бы их работать без управления, а удаление сочло бы их удалёнными
+      const live = await this.repository.hasLiveDeployments(id)
+      if (relocated && live) {
+        throw new DestinationError(
+          DestinationErrorCode.HAS_DEPLOYMENTS,
+          'delete the deployments on this destination before changing its address, environment or server',
+        )
+      }
+      // Под блокировкой назначения: новые развёртывания не появятся, а приложение, созданное прежним ключом
+      // после проверки, — повод проверить заново
+      if (keyChanged && live) assertVisible(await this.repository.liveApplicationIds(id), visible ?? new Set())
       const updated =
         (await this.repository.update(id, input.version, changes).catch(rethrowConflict)) ?? (await this.conflictOrMissing(id))
       await this.audit.record({
@@ -257,6 +283,16 @@ function notFound(id: string): never {
 
 function versionConflict(id: string): DestinationError {
   return new DestinationError(DestinationErrorCode.VERSION_CONFLICT, `destination ${id} was changed, reload and retry`)
+}
+
+function assertVisible(appIds: readonly string[], visible: ReadonlySet<string>): void {
+  const hidden = appIds.filter((appId) => !visible.has(appId))
+  if (hidden.length > 0) {
+    throw new DestinationError(
+      DestinationErrorCode.KEY_CANNOT_SEE_DEPLOYMENTS,
+      `the new api key does not see ${hidden.length} application(s) of this destination's deployments: use a key of the same Dokploy user`,
+    )
+  }
 }
 
 function rethrowConflict(error: unknown): never {
