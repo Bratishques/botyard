@@ -1,0 +1,39 @@
+[
+  {
+    "projectId": "prj_botyard_1",
+    "name": "botyard",
+    "description": null,
+    "createdAt": "2026-11-24T10:00:00.000Z",
+    "organizationId": "org_1",
+    "env": "",
+    "environments": [
+      {
+        "name": "production",
+        "environmentId": "env_prod_1",
+        "isDefault": true,
+        "applications": [{ "applicationId": "app_1", "name": "by-0193f0a2", "applicationStatus": "running" }],
+        "mariadb": [],
+        "mongo": [],
+        "mysql": [],
+        "postgres": [],
+        "redis": [],
+        "compose": [],
+        "libsql": []
+      },
+      {
+        "name": "staging",
+        "environmentId": "env_stage_1",
+        "isDefault": false,
+        "applications": [],
+        "mariadb": [],
+        "mongo": [],
+        "mysql": [],
+        "postgres": [],
+        "redis": [],
+        "compose": [],
+        "libsql": []
+      }
+    ],
+    "projectTags": []
+  }
+]

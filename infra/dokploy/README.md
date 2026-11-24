@@ -58,7 +58,12 @@ curl -s -H "x-api-key: $DOKPLOY_API_KEY" "$DOKPLOY_URL/api/project.all" | jq '.[
 | `GET application.readLogs` | логи (`tail`, `since`, `search`) |
 | `POST notification.createCustom` | вебхук о деплоях |
 
-Схемы ответов в OpenAPI не описаны: их нужно записать с живого инстанса в контрактные фикстуры api.
+Схемы ответов в OpenAPI не описаны. Пока они выведены из исходников Dokploy (коммит `b1b216e`):
+адаптер — `api/src/shared/dokploy`, фикстуры и их происхождение — `api/test/fixtures/dokploy/README.md`.
+С живого инстанса их нужно записать заново.
+
+Из исходников REST-слоя (`apps/dokploy/pages/api/[...trpc].ts`): неверный ключ — `401 { "message": "Unauthorized" }`,
+превышение лимита — `429` с заголовком `Retry-After`, успешный ответ — результат процедуры без обёртки.
 
 ## Развёртывание самого api
 
