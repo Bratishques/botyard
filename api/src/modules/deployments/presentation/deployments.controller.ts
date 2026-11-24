@@ -1,6 +1,8 @@
 import {
   DEPLOYMENT_ACTIONS,
+  type DeploymentAcceptedView,
   type DeploymentCreateBody,
+  type DeploymentDetailsView,
   type DeploymentView,
   deploymentCreateSchema,
   type OperationView,
@@ -203,7 +205,7 @@ export class DeploymentsController {
   }
 
   @Get(':id')
-  async get(@Param('id', DEPLOYMENT_ID) id: string): Promise<DeploymentView & { operations: OperationView[] }> {
+  async get(@Param('id', DEPLOYMENT_ID) id: string): Promise<DeploymentDetailsView> {
     const { deployment, operations } = await http(this.deployments.get(id))
 
     return { ...deploymentView(deployment), operations: operations.map(operationView) }
@@ -221,7 +223,7 @@ export class DeploymentsController {
         const created = await this.deployments.create(body, actor(operator))
         return {
           statusCode: HttpStatus.CREATED,
-          response: { ...deploymentView(created.deployment), operation: operationView(created.operation) },
+          response: { ...deploymentView(created.deployment), operation: operationView(created.operation) } satisfies DeploymentAcceptedView,
         }
       }),
     )
@@ -246,7 +248,10 @@ export class DeploymentsController {
     const result = await http(
       this.idempotency.run(scope, requireKey(key), { id, kind, version: body.version }, async () => {
         const { deployment, operation } = await this.deployments.operate(id, kind, body.version, actor(operator))
-        return { statusCode: HttpStatus.ACCEPTED, response: { ...deploymentView(deployment), operation: operationView(operation) } }
+        return {
+          statusCode: HttpStatus.ACCEPTED,
+          response: { ...deploymentView(deployment), operation: operationView(operation) } satisfies DeploymentAcceptedView,
+        }
       }),
     )
     response.status(result.statusCode)
