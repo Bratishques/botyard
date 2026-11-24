@@ -5,7 +5,7 @@
 
 ## Стек
 
-React 19, Vite, TypeScript strict, TanStack Router и Query, формы — react-hook-form + zod.
+Bun (пакеты, скрипты, тесты), React 19, Vite, TypeScript strict, TanStack Router и Query, формы — react-hook-form + zod.
 Каркас генерируется на этапе 4 (см. `../api/docs/roadmap.md`).
 
 ## Правила
