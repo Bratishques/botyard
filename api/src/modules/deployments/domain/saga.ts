@@ -52,11 +52,13 @@ export const OUTCOME: Readonly<Record<OperationKind, { readonly succeeded: Deplo
 }
 
 /**
- * Шаги, после которых в Dokploy уже идёт деплой: исход решает Dokploy, и закрыть такую операцию как FAILED
- * значило бы соврать — робот соберётся и запустится. Reconciler их будит, но не закрывает; конец им кладёт
- * дедлайн деплоя в воркере (RETRY.deployDeadlineMs)
+ * Шаги, исход которых может решаться в Dokploy уже без нас: деплой поставлен в очередь или идёт, start мог
+ * дойти до `docker service scale`. Закрыть такую операцию рано — соврать: робот соберётся и запустится.
+ * Reconciler будит их дольше (свой предел пинков — за пределами 30-минутного дедлайна деплоя в воркере) и
+ * закрывает с текстом «состояние в Dokploy неизвестно» — только если воркер так и не довёл шаг (например,
+ * падает на нём раз за разом)
  */
-export const OUTCOME_IN_DOKPLOY: ReadonlySet<SagaStep> = new Set([SagaStep.DEPLOY, SagaStep.AWAIT_DEPLOY])
+export const OUTCOME_IN_DOKPLOY: ReadonlySet<SagaStep> = new Set([SagaStep.DEPLOY, SagaStep.AWAIT_DEPLOY, SagaStep.START])
 
 /**
  * Шаги, которым нужно включённое назначение: всё, что ведёт к запуску робота, до самого запуска. После

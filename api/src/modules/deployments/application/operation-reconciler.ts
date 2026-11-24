@@ -26,6 +26,8 @@ export const RECONCILE = {
   idleMs: 10 * 60_000,
   /** Сколько раз будить на одном шаге без прогресса, прежде чем сдаться */
   maxKicks: 3,
+  /** То же для шагов, чей исход решается в Dokploy: ~70 мин — дольше дедлайна деплоя в воркере (30 мин) */
+  maxKicksInDokploy: 6,
   batch: 50,
 } as const
 
@@ -37,8 +39,8 @@ const ACTOR = 'system:reconciler'
  * как FAILED и снимает захват с развёртывания, чтобы оператор не застрял с 409 навсегда.
  *
  * - Операция, чья команда ещё лежит в outbox неопубликованной, не застряла — она в заторе (relay стоит).
- * - На шагах, где деплой уже идёт в Dokploy, reconciler не сдаётся: FAILED соврал бы, робот запустится.
- *   Такие операции он только будит, конец им кладёт дедлайн деплоя в воркере.
+ * - На шагах, исход которых решается в Dokploy (deploy, await_deploy, start), reconciler ждёт дольше и
+ *   закрывает с текстом «состояние в Dokploy неизвестно»: ранний FAILED соврал бы, робот запустится.
  *
  * - Пинок — условная запись с новой меткой пробуждения и командой в outbox в одной транзакции: старая команда,
  *   если всё-таки доедет, устареет, и двух цепочек не будет.
@@ -61,7 +63,8 @@ export class OperationReconciler {
   async tick(): Promise<{ kicked: number; abandoned: number }> {
     const result = { kicked: 0, abandoned: 0 }
     for (const stalled of await this.store.stalled(RECONCILE.idleMs, RECONCILE.batch)) {
-      if (stalled.kicks >= RECONCILE.maxKicks && !OUTCOME_IN_DOKPLOY.has(stalled.step)) {
+      const limit = OUTCOME_IN_DOKPLOY.has(stalled.step) ? RECONCILE.maxKicksInDokploy : RECONCILE.maxKicks
+      if (stalled.kicks >= limit) {
         if (await this.giveUp(stalled)) result.abandoned++
       } else if (await this.wake(stalled)) {
         result.kicked++
@@ -91,9 +94,12 @@ export class OperationReconciler {
   }
 
   private giveUp(stalled: StalledOperation): Promise<boolean> {
+    const unknown = OUTCOME_IN_DOKPLOY.has(stalled.step)
+      ? '; its state in Dokploy is unknown — check the application in Dokploy before retrying'
+      : '; the robot was not touched by this decision'
     const error =
       `the operation made no progress on step ${stalled.step} after ${stalled.kicks} restarts ` +
-      '(check that the saga worker and the outbox relay are running); the robot was not touched by this decision'
+      `(check that the saga worker and the outbox relay are running)${unknown}`
 
     return this.unitOfWork.run(async () => {
       const done = await this.store.abandon(

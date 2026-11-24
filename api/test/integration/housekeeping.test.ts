@@ -44,3 +44,52 @@ describe('очистка служебных таблиц', () => {
     expect(keys.map((row) => row.key)).toEqual([live])
   })
 })
+
+describe('ключ идемпотентности и очистка', () => {
+  test('ключ удалён очисткой между конфликтной вставкой и чтением — это новый запрос, работа выполняется один раз', async () => {
+    const stale = await key(25)
+    let armed = true
+    let works = 0
+    /** Перехват: перед чтением сохранённого ответа ключ удаляет «очистка» и коммитит — окно из ревью */
+    const racing = new (class extends UnitOfWork {
+      override db() {
+        const real = super.db()
+        return new Proxy(real, {
+          get(target, property, receiver) {
+            const value = Reflect.get(target, property, receiver)
+            if (typeof value !== 'function') return value
+            // Методы Kysely работают с приватными полями: вызывать их на исходном объекте, а не на прокси
+            if (property !== 'selectFrom' || !armed) return value.bind(target)
+            return (...args: unknown[]) => wrap(value.apply(target, args))
+          },
+        })
+      }
+    })(db)
+    function wrap<T extends object>(builder: T): T {
+      return new Proxy(builder, {
+        get(target, property, receiver) {
+          const value = Reflect.get(target, property, receiver)
+          if (typeof value !== 'function') return value
+          if (property === 'executeTakeFirst') {
+            return async (...args: unknown[]) => {
+              armed = false
+              await sql`DELETE FROM idempotency_record WHERE key = ${stale}`.execute(db)
+              return value.apply(target, args)
+            }
+          }
+          return (...args: unknown[]) => {
+            const next = value.apply(target, args)
+            return typeof next === 'object' && next !== null ? wrap(next) : next
+          }
+        },
+      })
+    }
+    const result = await new Idempotency(racing).run('test', stale, { any: 'request' }, async () => {
+      works++
+      return { statusCode: 201, response: { fresh: true } }
+    })
+
+    expect(result).toEqual({ statusCode: 201, response: { fresh: true }, replayed: false })
+    expect(works).toBe(1)
+  })
+})

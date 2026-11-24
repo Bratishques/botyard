@@ -346,6 +346,26 @@ describe('воркер саги: provision', () => {
     expect(result.operation.status).toBe('FAILED')
   })
 
+  test('Retry-After от Dokploy длиннее 5 минут — повтор не позже чем через 5 минут (порог reconciler больше)', async () => {
+    const platform = new FakePlatform()
+    platform.failBefore.set('findApps', new PlatformError(true, 'dokploy application.search: 429', 15 * 60_000))
+    const { operation } = await provision()
+    const [first] = await pending(operation.id)
+    if (!first) throw new Error('no command')
+    await db.updateTable('outbox_message').set({ published_at: new Date() }).where('id', '=', first.id).execute()
+
+    await workerWith(platform).handle(first.message)
+
+    const retry = await db
+      .selectFrom('outbox_message')
+      .select(sql<number>`extract(epoch from available_at - created_at)`.as('delay'))
+      .where(sql<boolean>`payload->>'operationId' = ${operation.id}`)
+      .where('published_at', 'is', null)
+      .executeTakeFirstOrThrow()
+    expect(Number(retry.delay)).toBeLessThanOrEqual(5 * 60 + 1)
+    expect(Number(retry.delay)).toBeGreaterThanOrEqual(15)
+  })
+
   test('ключ Dokploy не принят — отказ без повторов; временная ошибка — повторы до предела', async () => {
     const rejected = new FakePlatform()
     rejected.failBefore.set('findApps', new PlatformError(false, 'dokploy application.search: 401 Unauthorized'))
@@ -761,6 +781,22 @@ describe('reconciler застрявших операций', () => {
     expect(result.abandoned).toBe(0)
     expect((await state(deployment.id, operation.id)).operation.status).not.toBe('FAILED')
     expect((await pending(operation.id)).map((item) => item.message.step)).toEqual(['await_deploy'])
+  })
+
+  test('деплой и после шести пинков не доведён (воркер падает на шаге) — FAILED: состояние в Dokploy неизвестно', async () => {
+    const { deployment, operation } = await provision()
+    await loseCommand(operation.id)
+    await sql`UPDATE operation SET step = 'await_deploy', context = '{"kicks": 6, "baselineDeploymentId": null, "deployRequestedAt": "2026-11-24T00:00:00Z"}'::jsonb WHERE id = ${operation.id}`.execute(
+      db,
+    )
+
+    const result = await reconciler.tick()
+
+    expect(result.abandoned).toBeGreaterThanOrEqual(1)
+    const after = await state(deployment.id, operation.id)
+    expect(after.operation.status).toBe('FAILED')
+    expect(after.operation.error).toContain('state in Dokploy is unknown')
+    expect(after.deployment.active_operation_id).toBeNull()
   })
 
   test('опоздавший release воркера не стирает счётчик пинков', async () => {

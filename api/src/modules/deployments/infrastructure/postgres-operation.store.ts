@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common'
 import { sql } from 'kysely'
 import { UnitOfWork } from '../../../shared/database/unit-of-work'
+import { OutboxTopic } from '../../../shared/outbox/outbox'
 import type { ClaimedStep, ClaimRefusal, Finish, OperationStore, StalledOperation } from '../domain/operation-store'
 import { isSagaStep, type SagaStep } from '../domain/saga'
 
@@ -153,6 +154,7 @@ export class PostgresOperationStore implements OperationStore {
             selectFrom('outbox_message')
               .select(sql`1`.as('one'))
               .where('published_at', 'is', null)
+              .where('topic', '=', OutboxTopic.OPERATION_STEP)
               .whereRef(sql`outbox_message.payload->>'operationId'`, '=', sql`operation.id::text`),
           ),
         ),
