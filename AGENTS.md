@@ -18,3 +18,11 @@ Bun (пакеты, скрипты, тесты), React 19, Vite, TypeScript stric
   подтвердил сервер.
 - Включение боевого режима (`sandbox = false`) — отдельное подтверждение с вводом имени клиента.
 - Ошибка API показывается по коду (`OPERATION_IN_PROGRESS`, `DESTINATION_UNREACHABLE`), а не сырым текстом.
+
+## Подготовка, проверка и ревью
+
+Общие навыки лежат в `../api/.agents/skills` и применяются и здесь:
+[botyard-prepare](../api/.agents/skills/botyard-prepare/SKILL.md) до правки,
+[botyard-verify](../api/.agents/skills/botyard-verify/SKILL.md) с двумя независимыми ревью до отчёта,
+[botyard-error-learning](../api/.agents/skills/botyard-error-learning/SKILL.md) при подтверждённой ошибке агента.
+Порядок коммитов и завершения задачи — раздел «Git и завершение задачи» в [../api/AGENTS.md](../api/AGENTS.md).
