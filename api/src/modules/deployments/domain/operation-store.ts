@@ -74,6 +74,12 @@ export interface OperationStore {
   kick(stalled: StalledOperation, wake: string, idleMs: number): Promise<boolean>
   /** Сдаться: операция FAILED, итог в развёртывание (только если активная — она) — при тех же условиях */
   abandon(stalled: StalledOperation, finish: Finish, idleMs: number): Promise<boolean>
+  /**
+   * Разбудить ожидание деплоя приложения `appName` на назначении (вебхук Dokploy о сборке): операция, активная у
+   * развёртывания, на шаге `await_deploy`, шаг сейчас не арендован. Новая метка пробуждения делает отложенный опрос
+   * устаревшим — вместо него сразу пойдёт команда из этого вызова. `null` — будить нечего
+   */
+  nudgeAwaitingDeploy(destinationId: string, appName: string, wake: string): Promise<StalledOperation | null>
 }
 
 export const OPERATION_STORE = Symbol('OPERATION_STORE')

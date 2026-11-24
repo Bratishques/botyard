@@ -3,6 +3,7 @@ import { CatalogModule } from '../catalog/catalog.module'
 import { CustomersModule } from '../customers/customers.module'
 import { DestinationsModule } from '../destinations/destinations.module'
 import { DeploymentUseCases } from './application/deployment-use-cases'
+import { DokployWebhookHandler } from './application/dokploy-webhook-handler'
 import { OperationReconciler } from './application/operation-reconciler'
 import { OperationWorker } from './application/operation-worker'
 import { DEPLOYMENT_REPOSITORY } from './domain/deployment'
@@ -14,10 +15,11 @@ import { HandlebarsConfigRenderer } from './infrastructure/handlebars-config.ren
 import { PostgresDeploymentRepository } from './infrastructure/postgres-deployment.repository'
 import { PostgresOperationStore } from './infrastructure/postgres-operation.store'
 import { DeploymentsController } from './presentation/deployments.controller'
+import { DokployWebhookController } from './presentation/dokploy-webhook.controller'
 
 @Module({
   imports: [CatalogModule, CustomersModule, DestinationsModule],
-  controllers: [DeploymentsController],
+  controllers: [DeploymentsController, DokployWebhookController],
   providers: [
     { provide: DEPLOYMENT_REPOSITORY, useClass: PostgresDeploymentRepository },
     { provide: OPERATION_STORE, useClass: PostgresOperationStore },
@@ -26,6 +28,7 @@ import { DeploymentsController } from './presentation/deployments.controller'
     DeploymentUseCases,
     OperationWorker,
     OperationReconciler,
+    DokployWebhookHandler,
   ],
   exports: [DeploymentUseCases, OperationWorker, OperationReconciler],
 })

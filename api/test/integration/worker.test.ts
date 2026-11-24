@@ -7,6 +7,7 @@ import { PostgresCatalogRepository } from '../../src/modules/catalog/infrastruct
 import { CustomerUseCases } from '../../src/modules/customers/application/customer-use-cases'
 import { PostgresCustomerRepository } from '../../src/modules/customers/infrastructure/postgres-customer.repository'
 import { DeploymentUseCases } from '../../src/modules/deployments/application/deployment-use-cases'
+import { DokployWebhookHandler } from '../../src/modules/deployments/application/dokploy-webhook-handler'
 import { OperationReconciler } from '../../src/modules/deployments/application/operation-reconciler'
 import { OperationWorker, type StepMessage } from '../../src/modules/deployments/application/operation-worker'
 import {
@@ -22,16 +23,19 @@ import { PostgresDeploymentRepository } from '../../src/modules/deployments/infr
 import { PostgresOperationStore } from '../../src/modules/deployments/infrastructure/postgres-operation.store'
 import { DestinationSecrets } from '../../src/modules/destinations/application/destination-secrets'
 import { DestinationUseCases } from '../../src/modules/destinations/application/destination-use-cases'
+import { DestinationWebhooks } from '../../src/modules/destinations/application/destination-webhooks'
 import type { DokployCatalog } from '../../src/modules/destinations/domain/ports'
 import { PostgresDestinationRepository } from '../../src/modules/destinations/infrastructure/postgres-destination.repository'
+import { PostgresDestinationWebhookRepository } from '../../src/modules/destinations/infrastructure/postgres-destination-webhook.repository'
 import { AuditLog } from '../../src/shared/audit/audit'
 import { loadCatalogConfig, loadConfig } from '../../src/shared/config/config'
 import { LocalKeyEncryptionKey } from '../../src/shared/crypto/key-encryption-key'
 import { SecretBox } from '../../src/shared/crypto/secret-box'
 import { UnitOfWork } from '../../src/shared/database/unit-of-work'
+import { WebhookInbox } from '../../src/shared/inbox/inbox'
 import { Outbox } from '../../src/shared/outbox/outbox'
 import { ROBOT_CA_MOUNT_PATH, TINVEST_ADDRESS } from '../../src/shared/tinvest/tinvest'
-import { FakeTradingAccounts } from './fakes'
+import { FakeDokployNotifications, FakeTradingAccounts } from './fakes'
 import { db } from './setup'
 
 const TOKEN = 't.sandbox-token-0123456789abcdef'
@@ -147,6 +151,7 @@ const destinations = new DestinationUseCases(
   destinationSecrets,
   unitOfWork,
   audit,
+  new DestinationWebhooks(new PostgresDestinationWebhookRepository(unitOfWork), new FakeDokployNotifications(), loadConfig(), box),
 )
 const deployments = new DeploymentUseCases(new PostgresDeploymentRepository(unitOfWork), unitOfWork, outbox, audit)
 
@@ -836,5 +841,63 @@ describe('reconciler застрявших операций', () => {
     expect(await pending(operation.id)).toHaveLength(1)
     const row = await db.selectFrom('operation').select('context').where('id', '=', operation.id).executeTakeFirstOrThrow()
     expect(row.context).toMatchObject({ kicks: 1 })
+  })
+})
+
+describe('вебхук Dokploy о сборке', () => {
+  const handler = new DokployWebhookHandler(store, new WebhookInbox(unitOfWork), outbox, unitOfWork)
+
+  /** Довести provision до ожидания деплоя: шаг await_deploy отпущен на опрос */
+  async function awaitingDeploy() {
+    const platform = new FakePlatform()
+    platform.pollsUntilDone = 100
+    const created = await provision()
+    const worker = workerWith(platform)
+    for (;;) {
+      const [next] = await pending(created.operation.id)
+      if (!next) throw new Error('no command')
+      await db.updateTable('outbox_message').set({ published_at: new Date() }).where('id', '=', next.id).execute()
+      await worker.handle(next.message)
+      if (next.message.step === 'await_deploy') break
+    }
+    return { ...created, platform, worker }
+  }
+
+  const event = (appName: string, timestamp = new Date().toISOString()) => ({
+    type: 'build',
+    status: 'success',
+    applicationName: appName,
+    timestamp,
+  })
+
+  test('событие будит ожидание деплоя сразу: отложенный опрос устаревает, дубль события отсекается', async () => {
+    const { deployment, operation, target } = await awaitingDeploy()
+    const [delayed] = await pending(operation.id)
+    if (!delayed) throw new Error('no delayed poll')
+
+    const sent = event(deployment.appName)
+    expect(await handler.handle(target.id, sent)).toBe('nudged')
+    expect(await handler.handle(target.id, sent)).toBe('duplicate')
+
+    const commands = await pending(operation.id)
+    expect(commands).toHaveLength(2)
+    const nudge = commands.find((command) => command.id !== delayed.id)
+    expect(nudge?.message).toMatchObject({ step: 'await_deploy', wake: expect.any(String) })
+    expect(nudge?.message.wake).not.toBe(delayed.message.wake)
+    // Отложенный опрос теперь устарел: его доставка Dokploy не трогает
+    const platform = new FakePlatform()
+    await workerWith(platform).handle(delayed.message)
+    expect(platform.calls).toEqual([])
+  })
+
+  test('чужое приложение, не-сборка и шаг, который сейчас арендован, — без пробуждения', async () => {
+    const { deployment, operation, target } = await awaitingDeploy()
+
+    expect(await handler.handle(target.id, event('by-000000000000'))).toBe('ignored')
+    expect(await handler.handle(target.id, { ...event(deployment.appName), type: 'backup' })).toBe('ignored')
+
+    const claimed = await store.claim(operation.id, 'await_deploy', (await pending(operation.id))[0]?.message.wake ?? null, 60_000)
+    expect('reason' in claimed).toBe(false)
+    expect(await handler.handle(target.id, event(deployment.appName))).toBe('ignored')
   })
 })

@@ -154,7 +154,7 @@ async function startReconciler(config: AppConfig): Promise<void> {
     }
     try {
       const purged = await housekeeping.tick()
-      if (purged.outbox + purged.idempotency > 0) logger.info({ purged }, 'service tables purged')
+      if (purged.outbox + purged.idempotency + purged.inbox > 0) logger.info({ purged }, 'service tables purged')
     } catch (error) {
       logger.error({ err: error }, 'housekeeping failed')
     }

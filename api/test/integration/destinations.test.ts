@@ -6,15 +6,18 @@ import { FilesystemCatalogSource } from '../../src/modules/catalog/infrastructur
 import { PostgresCatalogRepository } from '../../src/modules/catalog/infrastructure/postgres-catalog.repository'
 import { DestinationSecrets } from '../../src/modules/destinations/application/destination-secrets'
 import { DestinationUseCases } from '../../src/modules/destinations/application/destination-use-cases'
+import { DestinationWebhooks } from '../../src/modules/destinations/application/destination-webhooks'
 import { DestinationErrorCode } from '../../src/modules/destinations/domain/destination'
 import type { DokployCatalog } from '../../src/modules/destinations/domain/ports'
 import { PostgresDestinationRepository } from '../../src/modules/destinations/infrastructure/postgres-destination.repository'
+import { PostgresDestinationWebhookRepository } from '../../src/modules/destinations/infrastructure/postgres-destination-webhook.repository'
 import { AuditLog } from '../../src/shared/audit/audit'
 import { loadCatalogConfig, loadConfig } from '../../src/shared/config/config'
 import { LocalKeyEncryptionKey } from '../../src/shared/crypto/key-encryption-key'
 import { SecretBox } from '../../src/shared/crypto/secret-box'
 import { UnitOfWork } from '../../src/shared/database/unit-of-work'
 import { DokployRateLimitedError, DokployUnauthorizedError, DokployUnavailableError } from '../../src/shared/dokploy/dokploy.errors'
+import { FakeDokployNotifications } from './fakes'
 import { db } from './setup'
 
 /**
@@ -101,6 +104,7 @@ beforeEach(async () => {
     new DestinationSecrets(box),
     unitOfWork,
     new AuditLog(unitOfWork),
+    new DestinationWebhooks(new PostgresDestinationWebhookRepository(unitOfWork), new FakeDokployNotifications(), config, box),
   )
 })
 
@@ -189,6 +193,7 @@ describe('создание назначения', () => {
       new DestinationSecrets(box),
       unitOfWork,
       failingAudit,
+      new DestinationWebhooks(new PostgresDestinationWebhookRepository(unitOfWork), new FakeDokployNotifications(), config, box),
     )
     const name = `atomic-${crypto.randomUUID().slice(0, 8)}`
 

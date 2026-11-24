@@ -19,6 +19,7 @@ import {
   type DokployCatalog,
 } from '../domain/ports'
 import { DestinationSecrets } from './destination-secrets'
+import { DestinationWebhooks } from './destination-webhooks'
 import { toDestinationError, verifyTarget } from './verify-target'
 
 export interface CreateDestinationInput {
@@ -56,6 +57,7 @@ export class DestinationUseCases {
     private readonly secrets: DestinationSecrets,
     private readonly unitOfWork: UnitOfWork,
     private readonly audit: AuditLog,
+    private readonly webhooks: DestinationWebhooks,
   ) {}
 
   list(): Promise<Destination[]> {
@@ -102,7 +104,7 @@ export class DestinationUseCases {
     const id = Bun.randomUUIDv7()
     const { sealed, hint } = await this.secrets.seal(id, baseUrl, input.apiKey)
 
-    return this.unitOfWork.run(async () => {
+    const created = await this.unitOfWork.run(async () => {
       const created = await this.repository
         .insert({
           id,
@@ -125,6 +127,10 @@ export class DestinationUseCases {
 
       return created
     })
+    // Вебхук Dokploy — после записи и вне транзакции; неудача не отменяет создание (см. DestinationWebhooks)
+    await this.webhooks.register(created, input.apiKey)
+
+    return created
   }
 
   async update(id: string, input: UpdateDestinationInput, actor: string): Promise<Destination> {
@@ -249,6 +255,8 @@ export class DestinationUseCases {
         environmentId: current.environmentId,
         serverId: current.serverId,
       })
+      // Связь есть — заодно убедиться, что вебхук зарегистрирован (повторяемо; неудача только записывается)
+      await this.webhooks.register(current, apiKey)
     } catch (caught) {
       if (!(caught instanceof DestinationError)) throw caught
       error = `${caught.code}: ${caught.message}`

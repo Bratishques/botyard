@@ -4,6 +4,7 @@ import {
   type TradingAccounts,
   TradingAccountsUnavailableError,
 } from '../../src/modules/customers/domain/trading-accounts'
+import type { DokployNotifications } from '../../src/modules/destinations/domain/webhook'
 
 /**
  * Брокер в памяти: по умолчанию любой токен действует с любым счётом. `results` — исход для токена,
@@ -37,5 +38,17 @@ export class FakeTradingAccounts implements TradingAccounts {
     }
     if (this.down) throw new TradingAccountsUnavailableError('t-invest UsersService/GetAccounts: 503')
     return this.results.get(token) ?? { ok: true }
+  }
+}
+
+/** Уведомления Dokploy в памяти: запоминают последнюю регистрацию по имени */
+export class FakeDokployNotifications implements DokployNotifications {
+  readonly registered = new Map<string, { endpoint: string; headers: Record<string, string> }>()
+  fail = false
+
+  async upsertCustom(_baseUrl: string, _apiKey: string, notification: { name: string; endpoint: string; headers: Record<string, string> }) {
+    if (this.fail) throw new Error('dokploy notification.createCustom: 503')
+    this.registered.set(notification.name, { endpoint: notification.endpoint, headers: notification.headers })
+    return `ntf-${notification.name.slice(-8)}`
   }
 }

@@ -152,6 +152,15 @@ attempt, error, requestedBy, createdAt, finishedAt }`; `step` — текущий
 Клиента с неудалёнными развёртываниями нельзя архивировать и переключать между песочницей и боевым режимом:
 `409 CUSTOMER_HAS_DEPLOYMENTS`.
 
+## Вебхуки Dokploy
+
+| Метод | Путь | Тело | Ответ |
+|---|---|---|---|
+| POST | `/webhooks/dokploy/:destinationId` | тело custom-уведомления Dokploy о сборке (`type`, `status`, `applicationName`, `timestamp`; прочее не читается) + заголовок `x-botyard-token` | `200 { result: nudged \| duplicate \| ignored }`; без секрета или с чужим — `401 WEBHOOK_UNAUTHORIZED` |
+
+Ручка без сессии: её вызывает Dokploy. Регистрирует её сам api при создании и проверке назначения, если задан
+`PUBLIC_API_URL`.
+
 ## Журнал
 
 - 2026-11-24 — служебные ручки health.
@@ -169,3 +178,4 @@ attempt, error, requestedBy, createdAt, finishedAt }`; `step` — текущий
 - 2026-11-24 — схемы запросов вынесены в `@botyard/contract`; тело `{ version }` у включения и выключения назначения
   теперь строгое, как у остальных: лишние поля — `400 VALIDATION_FAILED`.
 - 2026-11-24 — `Idempotency-Key` помнится не меньше суток.
+- 2026-11-25 — вебхуки Dokploy: `POST /webhooks/dokploy/:destinationId`, `WEBHOOK_UNAUTHORIZED`.

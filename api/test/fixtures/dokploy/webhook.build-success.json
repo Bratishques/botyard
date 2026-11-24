@@ -1,0 +1,13 @@
+{
+  "title": "Build Success",
+  "message": "Build completed successfully",
+  "projectName": "botyard",
+  "applicationName": "by-a940451d6af7",
+  "applicationType": "application",
+  "buildLink": "https://dokploy.example.com/dashboard/project/nGIz56JkJ_uLXpwATu1ap/environment/s-pYunUJOTOz3qQOEkcG5/services/application/qc-ki1-LmYEwNAeTCfEaa?tab=deployments",
+  "timestamp": "2026-11-24T21:14:35.355Z",
+  "date": "11/24/2026, 9:14:35 PM",
+  "domains": "",
+  "status": "success",
+  "type": "build"
+}

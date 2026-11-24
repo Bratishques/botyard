@@ -17,6 +17,8 @@ export interface Database {
   operation: OperationTable
   outbox_message: OutboxMessageTable
   idempotency_record: IdempotencyRecordTable
+  destination_webhook: DestinationWebhookTable
+  webhook_inbox: WebhookInboxTable
 }
 
 type CreatedAt = ColumnType<Date, Date | undefined, never>
@@ -149,4 +151,22 @@ export interface IdempotencyRecordTable {
   status_code: number
   response: ColumnType<unknown, string, string>
   created_at: CreatedAt
+}
+
+export interface DestinationWebhookTable {
+  destination_id: string
+  secret_sealed: Uint8Array
+  notification_id: string | null
+  endpoint: string | null
+  error: string | null
+  registered_at: Date | null
+  updated_at: UpdatedAt
+}
+
+export interface WebhookInboxTable {
+  dedup_key: string
+  destination_id: string
+  application_name: string
+  status: string
+  received_at: CreatedAt
 }

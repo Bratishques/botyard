@@ -213,6 +213,25 @@ export class PostgresOperationStore implements OperationStore {
     })
   }
 
+  async nudgeAwaitingDeploy(destinationId: string, appName: string, wake: string): Promise<StalledOperation | null> {
+    const result = await sql<{ id: string; deployment_id: string; kind: StalledOperation['kind']; kicks: number }>`
+      UPDATE operation o
+      SET context = o.context || jsonb_build_object('wakeNonce', ${wake}::text), lease_until = NULL, updated_at = now()
+      FROM bot_deployment d
+      WHERE d.active_operation_id = o.id
+        AND d.destination_id = ${destinationId}
+        AND d.app_name = ${appName}
+        AND o.step = 'await_deploy'
+        AND o.status IN ('PENDING', 'RUNNING')
+        AND (o.lease_until IS NULL OR o.lease_until < now())
+      RETURNING o.id, o.deployment_id, o.kind, coalesce((o.context->>'kicks')::int, 0) AS kicks
+    `.execute(this.unitOfWork.db())
+    const [row] = result.rows
+    if (!row) return null
+
+    return { operationId: row.id, deploymentId: row.deployment_id, kind: row.kind, step: 'await_deploy', kicks: row.kicks }
+  }
+
   /** Условие reconciler'а: тот же шаг, не завершена, аренды нет, без движения, пинков столько же, сколько прочитано */
   private stillStalled(stalled: StalledOperation, idleMs: number) {
     return this.unitOfWork

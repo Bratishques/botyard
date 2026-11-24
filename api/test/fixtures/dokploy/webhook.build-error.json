@@ -1,0 +1,13 @@
+{
+  "title": "Build Error",
+  "message": "Build failed with errors",
+  "projectName": "botyard",
+  "applicationName": "by-hookprobe0001",
+  "applicationType": "application",
+  "errorMessage": "Initializing deployment\nCloning Repo Custom https://github.com/elkopass/BITA.git to /etc/dokploy/applications/by-hookprobe0001-llatj0/code: ✅\nCloning into '/etc/dokploy/applications/by-hookprobe0001-llatj0/code'...\nremote: Enumerating objects: 118, done.        \nremote: Counting objects:   0% (1/118)        \rremote: Counting objects:   1% (2/118)        \rremote: Counting objects:   2% (3/118)     …",
+  "buildLink": "https://dokploy.example.com/dashboard/project/nGIz56JkJ_uLXpwATu1ap/environment/s-pYunUJOTOz3qQOEkcG5/services/application/WsC6J5u1wpwAU9h8BSTJx?tab=deployments",
+  "timestamp": "2026-11-24T21:14:25.068Z",
+  "date": "11/24/2026, 9:14:25 PM",
+  "status": "error",
+  "type": "build"
+}

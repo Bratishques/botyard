@@ -10,9 +10,11 @@ import { FilesystemCatalogSource } from '../../src/modules/catalog/infrastructur
 import { PostgresCatalogRepository } from '../../src/modules/catalog/infrastructure/postgres-catalog.repository'
 import { AuditLog } from '../../src/shared/audit/audit'
 import { loadCatalogConfig, loadConfig } from '../../src/shared/config/config'
+import { SecretBox, secretContext } from '../../src/shared/crypto/secret-box'
 import { UnitOfWork } from '../../src/shared/database/unit-of-work'
 import projectsFixture from '../fixtures/dokploy/project.all.json'
 import unauthorizedFixture from '../fixtures/dokploy/unauthorized.json'
+import buildSuccessFixture from '../fixtures/dokploy/webhook.build-success.json'
 import { db } from './setup'
 
 /**
@@ -390,6 +392,48 @@ describe('клиенты по HTTP', () => {
 
     expect(live.status).toBe(409)
     expect(((await live.json()) as { code: string }).code).toBe('CUSTOMER_LIVE_CHECK_DISABLED')
+  })
+})
+
+describe('вебхук Dokploy по HTTP', () => {
+  test('без секрета или с чужим — 401 без подробностей; с секретом назначения — 200, тело Dokploy как есть', async () => {
+    const id = Bun.randomUUIDv7()
+    await db
+      .insertInto('destination')
+      .values({
+        id,
+        name: `wh-http-${id.slice(-8)}`,
+        base_url: `https://dokploy-${id.slice(-8)}.example.com`,
+        api_key_sealed: new Uint8Array([1]),
+        api_key_hint: '••••abcd',
+        project_id: 'prj',
+        environment_id: `env-${id.slice(-12)}`,
+        server_id: null,
+      })
+      .execute()
+    const token = `tok-${crypto.randomUUID()}`
+    await db
+      .insertInto('destination_webhook')
+      .values({
+        destination_id: id,
+        secret_sealed: await app.get(SecretBox).seal(token, secretContext('destination', id, 'webhook_secret')),
+      })
+      .execute()
+    const post = (headers: Record<string, string>) =>
+      fetch(`${base}/webhooks/dokploy/${id}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', ...headers },
+        body: JSON.stringify(buildSuccessFixture),
+      })
+
+    const anonymous = await post({})
+    expect(anonymous.status).toBe(401)
+    expect(((await anonymous.json()) as { code: string }).code).toBe('WEBHOOK_UNAUTHORIZED')
+    expect((await post({ 'x-botyard-token': 'wrong' })).status).toBe(401)
+
+    const accepted = await post({ 'x-botyard-token': token })
+    expect(accepted.status).toBe(200)
+    expect(await accepted.json()).toEqual({ result: 'ignored' })
   })
 })
 

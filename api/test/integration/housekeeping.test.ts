@@ -3,11 +3,12 @@ import { sql } from 'kysely'
 import { UnitOfWork } from '../../src/shared/database/unit-of-work'
 import { Housekeeping } from '../../src/shared/housekeeping/housekeeping'
 import { Idempotency } from '../../src/shared/idempotency/idempotency'
+import { WebhookInbox } from '../../src/shared/inbox/inbox'
 import { Outbox } from '../../src/shared/outbox/outbox'
 import { db } from './setup'
 
 const unitOfWork = new UnitOfWork(db)
-const housekeeping = new Housekeeping(new Outbox(unitOfWork), new Idempotency(unitOfWork))
+const housekeeping = new Housekeeping(new Outbox(unitOfWork), new Idempotency(unitOfWork), new WebhookInbox(unitOfWork))
 
 async function message(publishedDaysAgo: number | null): Promise<string> {
   const id = Bun.randomUUIDv7()

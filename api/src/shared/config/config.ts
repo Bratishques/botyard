@@ -90,6 +90,12 @@ const schema = z
       .transform((value) => value === 'true'),
     // Брокер нужен relay и воркеру; процесс http без него обходится
     RABBITMQ_URL: z.url({ protocol: /^amqps?$/ }).optional(),
+    // Адрес api, по которому до него достучится Dokploy (вебхуки о сборке). Нет — вебхуки не регистрируются,
+    // исход деплоя узнаётся только опросом. Без завершающего слэша
+    PUBLIC_API_URL: z
+      .url({ protocol: /^https?$/ })
+      .transform((value) => value.replace(/\/+$/, ''))
+      .optional(),
     // http-адрес назначения: только для локальной разработки, ключ Dokploy по открытому каналу не уходит
     DESTINATIONS_ALLOW_HTTP: flag,
     TRUST_PROXY: trustProxy,

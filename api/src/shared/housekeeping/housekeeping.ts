@@ -1,6 +1,7 @@
 import { Global, Injectable, Module } from '@nestjs/common'
 import { Counter } from 'prom-client'
 import { IDEMPOTENCY_TTL_MS, Idempotency } from '../idempotency/idempotency'
+import { WebhookInbox } from '../inbox/inbox'
 import { registry } from '../observability/metrics'
 import { Outbox } from '../outbox/outbox'
 
@@ -15,6 +16,8 @@ export const HOUSEKEEPING = {
   /** Опубликованные сообщения outbox хранятся неделю — для разбора, что и когда уходило в брокер */
   outboxRetentionMs: 7 * 24 * 60 * 60_000,
   idempotencyTtlMs: IDEMPOTENCY_TTL_MS,
+  /** Inbox вебхуков: дубль события приходит за секунды, неделя — с запасом */
+  inboxRetentionMs: 7 * 24 * 60 * 60_000,
   batch: 1_000,
   /** Порций за проход: остальное — в следующий тик, а не одной долгой серией */
   maxBatches: 10,
@@ -30,15 +33,18 @@ export class Housekeeping {
   constructor(
     private readonly outbox: Outbox,
     private readonly idempotency: Idempotency,
+    private readonly inbox: WebhookInbox,
   ) {}
 
-  async tick(): Promise<{ outbox: number; idempotency: number }> {
+  async tick(): Promise<{ outbox: number; idempotency: number; inbox: number }> {
     const outbox = await drain(() => this.outbox.purgePublished(HOUSEKEEPING.outboxRetentionMs, HOUSEKEEPING.batch))
     const idempotency = await drain(() => this.idempotency.purgeExpired(HOUSEKEEPING.idempotencyTtlMs, HOUSEKEEPING.batch))
     purged.inc({ table: 'outbox_message' }, outbox)
+    const inbox = await drain(() => this.inbox.purge(HOUSEKEEPING.inboxRetentionMs, HOUSEKEEPING.batch))
     purged.inc({ table: 'idempotency_record' }, idempotency)
+    purged.inc({ table: 'webhook_inbox' }, inbox)
 
-    return { outbox, idempotency }
+    return { outbox, idempotency, inbox }
   }
 }
 
