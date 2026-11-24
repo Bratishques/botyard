@@ -7,6 +7,6 @@ OpenAPI Dokploy описывает только запросы, поэтому �
 | `project.all.json`  | **Записан с живого Dokploy v0.31.4**, 2026-11-24: проект `botyard` с окружениями `production` и `staging` в локальной песочнице. Значения id случайные, секретов нет                 |
 | `unauthorized.json` | **Записан с живого Dokploy v0.31.4**: ответ на неверный `x-api-key`, статус 401                                                                                                      |
 | `server.all.json`   | **Выведен из исходников** (коммит `b1b216e`, `apps/dokploy/server/api/routers/server.ts`, схема `server`): в песочнице нет удалённых серверов, живой ответ — `[]`. Значения выдуманы |
-| 429                 | Не записан: по исходникам REST-слоя (`apps/dokploy/pages/api/[...trpc].ts`) — `429 { message }` с `Retry-After`                                                                      |
+| `rate-limited.json` | **Записан с живого Dokploy v0.31.4**: ответ ключа с исчерпанным лимитом, статус 429, заголовок `Retry-After: 86345`                                                                  |
 
 Проверка адаптера против живого инстанса — `bun run test:contract` (см. `test/contract`).

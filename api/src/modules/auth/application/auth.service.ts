@@ -3,120 +3,143 @@ import { Inject, Injectable } from '@nestjs/common'
 import { AuditLog } from '../../../shared/audit/audit'
 import { APP_CONFIG, type AppConfig } from '../../../shared/config/config'
 import { UnitOfWork } from '../../../shared/database/unit-of-work'
-
-export interface Operator {
-  readonly id: string
-  readonly email: string
-}
-
-export class InvalidCredentialsError extends Error {
-  override readonly name = 'InvalidCredentialsError'
-}
+import { loginFailures } from '../../../shared/observability/metrics'
+import {
+  AuthError,
+  AuthErrorCode,
+  LOGIN_THROTTLE,
+  type LoginThrottle,
+  normalizeEmail,
+  OPERATOR_REPOSITORY,
+  type Operator,
+  type OperatorRepository,
+  SESSION_REPOSITORY,
+  type SessionRepository,
+} from '../domain/auth'
 
 /** Хеш-приманка: неизвестная почта проверяется так же долго, как известная (не раскрываем, есть ли оператор) */
 const DECOY_HASH = await Bun.password.hash('botyard-decoy-password', { algorithm: 'argon2id' })
+
+/** Одновременных проверок argon2 — не больше стольких; остальные ждут в ограниченной очереди */
+const MAX_CONCURRENT_HASHES = 4
+const MAX_WAITING_HASHES = 32
 
 export function hashToken(token: string): Buffer {
   return createHash('sha256').update(token).digest()
 }
 
 /**
- * Вход операторов. Сессия — случайный токен 256 бит в cookie; в базе — только его SHA-256.
+ * Вход операторов. Сессия — случайный токен 256 бит в cookie; в хранилище — только его SHA-256.
  *
- * Гонки: сессия проверяется по базе на каждом запросе, кеша нет — отзыв действует сразу и не может
- * быть «воскрешён» значением, прочитанным до отзыва. Выход и истечение — условие в том же запросе,
- * которым guard находит сессию.
+ * Модель угроз входа (docs/architecture.md): перебор паролей ограничен по почте и IP до хеширования,
+ * argon2 не запускается больше `MAX_CONCURRENT_HASHES` раз одновременно, неизвестная почта неотличима
+ * по ответу и времени. Сессия проверяется по базе на каждом запросе, кеша нет: отзыв действует сразу.
  */
 @Injectable()
 export class AuthService {
+  private activeHashes = 0
+  private readonly waiting: (() => void)[] = []
+
   constructor(
+    @Inject(OPERATOR_REPOSITORY) private readonly operators: OperatorRepository,
+    @Inject(SESSION_REPOSITORY) private readonly sessions: SessionRepository,
+    @Inject(LOGIN_THROTTLE) private readonly throttle: LoginThrottle,
+    @Inject(APP_CONFIG) private readonly config: AppConfig,
     private readonly unitOfWork: UnitOfWork,
     private readonly audit: AuditLog,
-    @Inject(APP_CONFIG) private readonly config: AppConfig,
   ) {}
 
-  async createOperator(emailInput: string, password: string): Promise<Operator> {
-    const email = emailInput.trim().toLowerCase()
-    if (password.length < 12) throw new Error('password must be at least 12 characters')
-    const id = Bun.randomUUIDv7()
-    const passwordHash = await Bun.password.hash(password, { algorithm: 'argon2id' })
-
-    return this.unitOfWork.run(async () => {
-      await this.unitOfWork.db().insertInto('operator').values({ id, email, password_hash: passwordHash }).execute()
-      await this.audit.record({ actor: 'system:cli', action: 'operator.created', targetType: 'operator', targetId: id, payload: { email } })
-
-      return { id, email }
-    })
-  }
-
-  async login(emailInput: string, password: string): Promise<{ token: string; operator: Operator; expiresAt: Date }> {
-    const email = emailInput.trim().toLowerCase()
-    const row = await this.unitOfWork
-      .db()
-      .selectFrom('operator')
-      .select(['id', 'email', 'password_hash'])
-      .where('email', '=', email)
-      .executeTakeFirst()
-
-    const valid = await Bun.password.verify(password, row?.password_hash ?? DECOY_HASH)
-    if (!row || !valid) {
-      await this.audit.record({
-        actor: 'anonymous',
-        action: 'operator.login_failed',
-        targetType: 'operator',
-        targetId: row?.id ?? null,
-        payload: { email },
-      })
-      throw new InvalidCredentialsError('invalid email or password')
+  async login(emailInput: string, password: string, ip: string): Promise<{ token: string; operator: Operator; expiresAt: Date }> {
+    let email: string
+    try {
+      email = normalizeEmail(emailInput)
+    } catch {
+      loginFailures.inc({ reason: 'unknown_email' })
+      throw invalidCredentials()
     }
 
+    const keys = [`email:${email}`, `ip:${ip}`]
+    const blockedFor = this.throttle.blockedFor(keys, Date.now())
+    if (blockedFor !== null) {
+      loginFailures.inc({ reason: 'throttled' })
+      throw new AuthError(AuthErrorCode.LOGIN_THROTTLED, 'too many failed sign-in attempts', blockedFor)
+    }
+
+    const record = await this.operators.findByEmail(email)
+    const valid = await this.withHashSlot(() => Bun.password.verify(password, record?.passwordHash ?? DECOY_HASH))
+    if (!record || !valid) {
+      this.throttle.recordFailure(keys, Date.now())
+      loginFailures.inc({ reason: record ? 'wrong_password' : 'unknown_email' })
+      // Аудит — только для существующего оператора: строки о выдуманных почтах в неудаляемом журнале не нужны
+      if (record) {
+        await this.audit.record({
+          actor: 'anonymous',
+          action: 'operator.login_failed',
+          targetType: 'operator',
+          targetId: record.id,
+          payload: { ip },
+        })
+      }
+      throw invalidCredentials()
+    }
+
+    this.throttle.reset([`email:${email}`])
     const token = randomBytes(32).toString('base64url')
     const expiresAt = new Date(Date.now() + this.config.SESSION_TTL_HOURS * 3_600_000)
     await this.unitOfWork.run(async () => {
-      await this.unitOfWork
-        .db()
-        .insertInto('operator_session')
-        .values({ token_hash: hashToken(token), operator_id: row.id, expires_at: expiresAt })
-        .execute()
-      await this.audit.record({ actor: `operator:${row.id}`, action: 'operator.logged_in', targetType: 'operator', targetId: row.id })
+      await this.sessions.create(hashToken(token), record.id, expiresAt)
+      await this.audit.record({
+        actor: `operator:${record.id}`,
+        action: 'operator.logged_in',
+        targetType: 'operator',
+        targetId: record.id,
+        payload: { ip },
+      })
     })
 
-    return { token, operator: { id: row.id, email: row.email }, expiresAt }
+    return { token, operator: { id: record.id, email: record.email }, expiresAt }
   }
 
-  /** Оператор по токену сессии — только для живой, не отозванной и не истёкшей сессии */
-  async resolve(token: string): Promise<Operator | null> {
-    const row = await this.unitOfWork
-      .db()
-      .selectFrom('operator_session')
-      .innerJoin('operator', 'operator.id', 'operator_session.operator_id')
-      .select(['operator.id', 'operator.email'])
-      .where('operator_session.token_hash', '=', hashToken(token))
-      .where('operator_session.revoked_at', 'is', null)
-      .where('operator_session.expires_at', '>', new Date())
-      .executeTakeFirst()
-
-    return row ?? null
+  resolve(token: string): Promise<Operator | null> {
+    return this.sessions.findActive(hashToken(token), new Date())
   }
 
   async logout(token: string): Promise<void> {
     await this.unitOfWork.run(async () => {
-      const revoked = await this.unitOfWork
-        .db()
-        .updateTable('operator_session')
-        .set({ revoked_at: new Date() })
-        .where('token_hash', '=', hashToken(token))
-        .where('revoked_at', 'is', null)
-        .returning('operator_id')
-        .executeTakeFirst()
-      if (revoked) {
+      const operatorId = await this.sessions.revoke(hashToken(token), new Date())
+      if (operatorId) {
         await this.audit.record({
-          actor: `operator:${revoked.operator_id}`,
+          actor: `operator:${operatorId}`,
           action: 'operator.logged_out',
           targetType: 'operator',
-          targetId: revoked.operator_id,
+          targetId: operatorId,
         })
       }
     })
   }
+
+  /** Семафор на argon2: сотня параллельных входов не съедает память и CPU, лишние сразу получают отказ */
+  private async withHashSlot<T>(work: () => Promise<T>): Promise<T> {
+    if (this.activeHashes >= MAX_CONCURRENT_HASHES) {
+      if (this.waiting.length >= MAX_WAITING_HASHES) {
+        loginFailures.inc({ reason: 'busy' })
+        throw new AuthError(AuthErrorCode.LOGIN_BUSY, 'sign-in is busy, retry shortly', 1_000)
+      }
+      await new Promise<void>((resolve) => this.waiting.push(resolve))
+    } else {
+      this.activeHashes++
+    }
+
+    try {
+      return await work()
+    } finally {
+      const next = this.waiting.shift()
+      if (next) next()
+      else this.activeHashes--
+    }
+  }
+}
+
+function invalidCredentials(): AuthError {
+  return new AuthError(AuthErrorCode.INVALID_CREDENTIALS, 'invalid email or password')
 }

@@ -1,10 +1,16 @@
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 import type { NestExpressApplication } from '@nestjs/platform-express'
+import { sql } from 'kysely'
 import { createHttpApp } from '../../src/main'
-import { AuthService } from '../../src/modules/auth/application/auth.service'
+import { hashToken } from '../../src/modules/auth/application/auth.service'
+import { CreateOperator } from '../../src/modules/auth/application/create-operator'
+import { PostgresOperatorRepository } from '../../src/modules/auth/infrastructure/postgres-auth.repositories'
+import { AuditLog } from '../../src/shared/audit/audit'
 import { loadConfig } from '../../src/shared/config/config'
+import { UnitOfWork } from '../../src/shared/database/unit-of-work'
 import projectsFixture from '../fixtures/dokploy/project.all.json'
 import unauthorizedFixture from '../fixtures/dokploy/unauthorized.json'
+import { db } from './setup'
 
 /**
  * Сквозной HTTP: настоящее приложение и настоящий клиент Dokploy, а Dokploy — заглушка на Bun.serve,
@@ -18,6 +24,7 @@ let app: NestExpressApplication
 let base: string
 let dokploy: ReturnType<typeof Bun.serve>
 let email: string
+let operatorId: string
 
 beforeAll(async () => {
   dokploy = Bun.serve({
@@ -51,7 +58,9 @@ beforeAll(async () => {
   base = `http://127.0.0.1:${typeof address === 'object' && address ? address.port : 0}`
 
   email = `operator-${crypto.randomUUID().slice(0, 8)}@botyard.local`
-  await app.get(AuthService).createOperator(email, PASSWORD)
+  const unitOfWork = app.get(UnitOfWork)
+  const createOperator = new CreateOperator(new PostgresOperatorRepository(unitOfWork), unitOfWork, app.get(AuditLog))
+  operatorId = (await createOperator.execute(email, PASSWORD, 'system:test')).id
 })
 
 afterAll(async () => {
@@ -113,6 +122,98 @@ describe('вход', () => {
     })
 
     expect(response.status).toBe(415)
+  })
+
+  test('выход с мёртвой cookie — 204 и cookie очищена; повторный выход пишет аудит один раз', async () => {
+    const cookie = await session()
+    expect((await fetch(`${base}/auth/logout`, json({}, cookie))).status).toBe(204)
+    const again = await fetch(`${base}/auth/logout`, json({}, cookie))
+
+    expect(again.status).toBe(204)
+    expect(again.headers.get('set-cookie') ?? '').toContain('botyard_session=;')
+    const token = decodeURIComponent(cookie.split('=').slice(1).join('='))
+    const session_ = await db
+      .selectFrom('operator_session')
+      .select('revoked_at')
+      .where('token_hash', '=', hashToken(token))
+      .executeTakeFirstOrThrow()
+    expect(session_.revoked_at).not.toBeNull()
+    const logouts = await db
+      .selectFrom('audit_event')
+      .select('id')
+      .where('action', '=', 'operator.logged_out')
+      .where('target_id', '=', operatorId)
+      .execute()
+    expect(logouts.length).toBe(new Set(logouts.map((row) => row.id)).size)
+  })
+
+  test('истёкшая сессия не пускает', async () => {
+    const cookie = await session()
+    const token = decodeURIComponent(cookie.split('=').slice(1).join('='))
+    // Подделка времени — сырым SQL: тип схемы правильно запрещает менять created_at из кода
+    await sql`UPDATE operator_session SET created_at = now() - interval '2 seconds', expires_at = now() - interval '1 second'
+      WHERE token_hash = ${hashToken(token)}`.execute(db)
+
+    expect((await fetch(`${base}/auth/me`, { headers: { cookie } })).status).toBe(401)
+  })
+
+  test('битая cookie — 401, а не 500', async () => {
+    expect((await fetch(`${base}/auth/me`, { headers: { cookie: 'botyard_session=%E0%A4%A' } })).status).toBe(401)
+  })
+
+  test('почта при входе нормализуется; Content-Type в другом регистре принимается', async () => {
+    const response = await fetch(`${base}/auth/login`, {
+      method: 'POST',
+      headers: { 'content-type': 'Application/JSON' },
+      body: JSON.stringify({ email: `  ${email.toUpperCase()}  `, password: PASSWORD }),
+    })
+
+    expect(response.status).toBe(200)
+  })
+
+  test('битый JSON — 400 INVALID_JSON без эха тела', async () => {
+    const response = await fetch(`${base}/auth/login`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{"password": SECRETVALUE',
+    })
+    const text = await response.text()
+
+    expect(response.status).toBe(400)
+    expect(JSON.parse(text)).toEqual({ code: 'INVALID_JSON', message: 'request body is not valid JSON' })
+    expect(text).not.toContain('SECRETVALUE')
+  })
+
+  test('неудача по неизвестной почте в аудит не попадает', async () => {
+    const ghost = `ghost-${crypto.randomUUID().slice(0, 8)}@botyard.local`
+    await login(PASSWORD, ghost)
+
+    const rows = await sql<{ n: number }>`SELECT count(*)::int AS n FROM audit_event WHERE payload::text LIKE ${`%${ghost}%`}`.execute(db)
+    expect(rows.rows[0]?.n).toBe(0)
+  })
+
+  test('перебор пароля упирается в лимит: 429 с Retry-After, правильный пароль тоже ждёт', async () => {
+    const victim = `victim-${crypto.randomUUID().slice(0, 8)}@botyard.local`
+    const unitOfWork = app.get(UnitOfWork)
+    await new CreateOperator(new PostgresOperatorRepository(unitOfWork), unitOfWork, app.get(AuditLog)).execute(
+      victim,
+      PASSWORD,
+      'system:test',
+    )
+
+    for (let i = 0; i < 5; i++) expect((await login('wrong password', victim)).status).toBe(401)
+    const blocked = await login(PASSWORD, victim)
+
+    expect(blocked.status).toBe(429)
+    expect(Number(blocked.headers.get('retry-after'))).toBeGreaterThan(0)
+    expect(((await blocked.json()) as { code: string }).code).toBe('LOGIN_THROTTLED')
+  })
+
+  test('тот же оператор дважды — OPERATOR_EXISTS', async () => {
+    const unitOfWork = app.get(UnitOfWork)
+    const create = new CreateOperator(new PostgresOperatorRepository(unitOfWork), unitOfWork, app.get(AuditLog))
+
+    await expect(create.execute(email, PASSWORD, 'system:test')).rejects.toMatchObject({ code: 'OPERATOR_EXISTS' })
   })
 
   test('выход отзывает сессию сразу', async () => {

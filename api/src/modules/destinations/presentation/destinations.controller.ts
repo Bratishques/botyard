@@ -17,7 +17,7 @@ import {
 } from '@nestjs/common'
 import { z } from 'zod'
 import { ZodBody } from '../../../shared/http/zod-body'
-import type { Operator } from '../../auth/application/auth.service'
+import type { Operator } from '../../auth/domain/auth'
 import { CurrentOperator } from '../../auth/presentation/session.guard'
 import { DestinationUseCases } from '../application/destination-use-cases'
 import { type Destination, DestinationError, DestinationErrorCode } from '../domain/destination'
@@ -111,6 +111,11 @@ async function http<T>(work: Promise<T>): Promise<T> {
 
 const actor = (operator: Operator) => `operator:${operator.id}`
 
+/** id назначения — uuid; ошибка в формате контракта, а не текстом Nest */
+const DESTINATION_ID = new ParseUUIDPipe({
+  exceptionFactory: () => new BadRequestException({ code: 'VALIDATION_FAILED', message: 'id: must be a uuid' }),
+})
+
 @Controller('destinations')
 export class DestinationsController {
   constructor(private readonly destinations: DestinationUseCases) {}
@@ -121,7 +126,7 @@ export class DestinationsController {
   }
 
   @Get(':id')
-  async get(@Param('id', ParseUUIDPipe) id: string): Promise<DestinationView> {
+  async get(@Param('id', DESTINATION_ID) id: string): Promise<DestinationView> {
     return view(await http(this.destinations.get(id)))
   }
 
@@ -142,7 +147,7 @@ export class DestinationsController {
 
   @Patch(':id')
   async update(
-    @Param('id', ParseUUIDPipe) id: string,
+    @Param('id', DESTINATION_ID) id: string,
     @Body(new ZodBody(updateSchema)) body: z.infer<typeof updateSchema>,
     @CurrentOperator() operator: Operator,
   ): Promise<DestinationView> {
@@ -151,14 +156,14 @@ export class DestinationsController {
 
   @Post(':id/check')
   @HttpCode(HttpStatus.OK)
-  async check(@Param('id', ParseUUIDPipe) id: string, @CurrentOperator() operator: Operator): Promise<DestinationView> {
+  async check(@Param('id', DESTINATION_ID) id: string, @CurrentOperator() operator: Operator): Promise<DestinationView> {
     return view(await http(this.destinations.check(id, actor(operator))))
   }
 
   @Post(':id/disable')
   @HttpCode(HttpStatus.OK)
   async disable(
-    @Param('id', ParseUUIDPipe) id: string,
+    @Param('id', DESTINATION_ID) id: string,
     @Body(new ZodBody(versionSchema)) body: z.infer<typeof versionSchema>,
     @CurrentOperator() operator: Operator,
   ): Promise<DestinationView> {
@@ -168,7 +173,7 @@ export class DestinationsController {
   @Post(':id/enable')
   @HttpCode(HttpStatus.OK)
   async enable(
-    @Param('id', ParseUUIDPipe) id: string,
+    @Param('id', DESTINATION_ID) id: string,
     @Body(new ZodBody(versionSchema)) body: z.infer<typeof versionSchema>,
     @CurrentOperator() operator: Operator,
   ): Promise<DestinationView> {

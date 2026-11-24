@@ -10,8 +10,8 @@
 src/
   modules/<модуль>/
     domain/          сущности, правила, машина состояний, порты (интерфейсы). Без Nest, без SQL, без HTTP
-    application/     сценарии (use-cases): один публичный execute, оркестрация портов
-    infrastructure/  адаптеры портов: Kysely-репозитории, клиент Dokploy, RabbitMQ, проверки готовности
+    application/     сценарии: одно публичное действие — один метод (класс-сценарий или метод сервиса агрегата)
+    infrastructure/  адаптеры портов: Postgres-репозитории, каталог Dokploy, RabbitMQ, проверки готовности
     presentation/    контроллеры, DTO, guards
   shared/            то, что нужно больше чем одному модулю: конфиг, база, шифрование, логи и метрики
   cli/               разовые команды: миграции
@@ -19,6 +19,9 @@ src/
 migrations/          миграции Kysely (TS-файлы с SQL), только вперёд — без `down`
 test/integration/    интеграционные тесты на Postgres из ../infra, база botyard_test
 ```
+
+Адаптер называется по системе, с которой работает, а не по библиотеке: `PostgresDestinationRepository`,
+а не `KyselyDestinationRepository` — библиотеку можно заменить, хранилище останется тем же.
 
 Зависимости направлены внутрь: `presentation → application → domain ← infrastructure`.
 Сценарий не импортирует адаптер, он получает порт через DI-токен.

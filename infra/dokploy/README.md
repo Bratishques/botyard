@@ -63,12 +63,11 @@ curl -s -H "x-api-key: $DOKPLOY_API_KEY" "$DOKPLOY_URL/api/project.all" | jq '.[
 | `GET application.readLogs` | логи (`tail`, `since`, `search`) |
 | `POST notification.createCustom` | вебхук о деплоях |
 
-Схемы ответов в OpenAPI не описаны. Пока они выведены из исходников Dokploy (коммит `b1b216e`):
-адаптер — `api/src/shared/dokploy`, фикстуры и их происхождение — `api/test/fixtures/dokploy/README.md`.
-С живого инстанса их нужно записать заново.
-
-Из исходников REST-слоя (`apps/dokploy/pages/api/[...trpc].ts`): неверный ключ — `401 { "message": "Unauthorized" }`,
-превышение лимита — `429` с заголовком `Retry-After`, успешный ответ — результат процедуры без обёртки.
+Схемы ответов в OpenAPI не описаны. Адаптер — `api/src/shared/dokploy`; фикстуры и происхождение каждой —
+`api/test/fixtures/dokploy/README.md`. На живом Dokploy v0.31.4 проверены: `project.all`, неверный ключ
+(`401 { "message": "Unauthorized" }`) и исчерпанный лимит ключа (`429 { "message": "Rate limit exceeded" }`,
+`Retry-After` в секундах). Успешный ответ — результат процедуры без обёртки. `server.all` с непустым списком
+сверен только с исходниками: в песочнице нет удалённых серверов.
 
 ## Развёртывание самого api
 

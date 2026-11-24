@@ -1,12 +1,27 @@
-import { Body, Controller, Get, HttpCode, Inject, Post, Req, Res, UnauthorizedException } from '@nestjs/common'
+import {
+  Body,
+  Controller,
+  Get,
+  HttpCode,
+  HttpException,
+  HttpStatus,
+  Inject,
+  Post,
+  Req,
+  Res,
+  ServiceUnavailableException,
+  UnauthorizedException,
+} from '@nestjs/common'
 import type { Request, Response } from 'express'
 import { z } from 'zod'
 import { APP_CONFIG, type AppConfig } from '../../../shared/config/config'
+import { Public } from '../../../shared/http/public'
 import { ZodBody } from '../../../shared/http/zod-body'
-import { AuthService, InvalidCredentialsError, type Operator } from '../application/auth.service'
-import { CurrentOperator, Public, readCookie, SESSION_COOKIE } from './session.guard'
+import { AuthService } from '../application/auth.service'
+import { AuthError, AuthErrorCode, type Operator } from '../domain/auth'
+import { CurrentOperator, readCookie, SESSION_COOKIE } from './session.guard'
 
-const loginSchema = z.object({ email: z.string().min(3).max(254), password: z.string().min(1).max(256) })
+const loginSchema = z.object({ email: z.string().min(3).max(254), password: z.string().min(1).max(256) }).strict()
 
 @Controller('auth')
 export class AuthController {
@@ -20,10 +35,11 @@ export class AuthController {
   @HttpCode(200)
   async login(
     @Body(new ZodBody(loginSchema)) body: z.infer<typeof loginSchema>,
+    @Req() request: Request,
     @Res({ passthrough: true }) response: Response,
   ): Promise<Operator> {
     try {
-      const { token, operator, expiresAt } = await this.auth.login(body.email, body.password)
+      const { token, operator, expiresAt } = await this.auth.login(body.email, body.password, request.ip ?? 'unknown')
       response.cookie(SESSION_COOKIE, token, {
         httpOnly: true,
         secure: this.config.SESSION_COOKIE_SECURE,
@@ -34,17 +50,24 @@ export class AuthController {
 
       return operator
     } catch (error) {
-      if (error instanceof InvalidCredentialsError) throw new UnauthorizedException({ code: 'INVALID_CREDENTIALS', message: error.message })
-      throw error
+      if (!(error instanceof AuthError)) throw error
+      if (error.retryAfterMs !== undefined) response.setHeader('Retry-After', String(Math.ceil(error.retryAfterMs / 1_000)))
+      if (error.code === AuthErrorCode.LOGIN_THROTTLED) {
+        throw new HttpException({ code: error.code, message: error.message }, HttpStatus.TOO_MANY_REQUESTS)
+      }
+      if (error.code === AuthErrorCode.LOGIN_BUSY) throw new ServiceUnavailableException({ code: error.code, message: error.message })
+      throw new UnauthorizedException({ code: AuthErrorCode.INVALID_CREDENTIALS, message: 'invalid email or password' })
     }
   }
 
+  /** Публичная: выйти можно и с истёкшей сессией — cookie очищается в любом случае */
+  @Public()
   @Post('logout')
   @HttpCode(204)
   async logout(@Req() request: Request, @Res({ passthrough: true }) response: Response): Promise<void> {
     const token = readCookie(request.headers.cookie, SESSION_COOKIE)
     if (token) await this.auth.logout(token)
-    response.clearCookie(SESSION_COOKIE, { path: '/' })
+    response.clearCookie(SESSION_COOKIE, { path: '/', httpOnly: true, sameSite: 'strict', secure: this.config.SESSION_COOKIE_SECURE })
   }
 
   @Get('me')

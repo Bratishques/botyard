@@ -5,7 +5,7 @@ import { DestinationSecrets } from '../../src/modules/destinations/application/d
 import { DestinationUseCases } from '../../src/modules/destinations/application/destination-use-cases'
 import { DestinationErrorCode } from '../../src/modules/destinations/domain/destination'
 import type { DokployCatalog } from '../../src/modules/destinations/domain/ports'
-import { KyselyDestinationRepository } from '../../src/modules/destinations/infrastructure/kysely-destination.repository'
+import { PostgresDestinationRepository } from '../../src/modules/destinations/infrastructure/postgres-destination.repository'
 import { AuditLog } from '../../src/shared/audit/audit'
 import { loadConfig } from '../../src/shared/config/config'
 import { LocalKeyEncryptionKey } from '../../src/shared/crypto/key-encryption-key'
@@ -80,7 +80,7 @@ async function codeOf(work: Promise<unknown>): Promise<string | undefined> {
 beforeEach(async () => {
   catalog = new FakeCatalog()
   useCases = new DestinationUseCases(
-    new KyselyDestinationRepository(unitOfWork),
+    new PostgresDestinationRepository(unitOfWork),
     catalog,
     config,
     new DestinationSecrets(box),
@@ -168,7 +168,7 @@ describe('создание назначения', () => {
       }
     })(unitOfWork)
     const withBrokenAudit = new DestinationUseCases(
-      new KyselyDestinationRepository(unitOfWork),
+      new PostgresDestinationRepository(unitOfWork),
       catalog,
       config,
       new DestinationSecrets(box),
@@ -305,7 +305,7 @@ describe('проверка связи', () => {
 
   test('из двух проверок остаётся более свежая по моменту ответа Dokploy', async () => {
     const created = await useCases.create(input(), 'operator:1')
-    const repository = new KyselyDestinationRepository(unitOfWork)
+    const repository = new PostgresDestinationRepository(unitOfWork)
     const newer = new Date()
     const older = new Date(newer.getTime() - 1_000)
 

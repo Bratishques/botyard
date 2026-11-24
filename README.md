@@ -9,8 +9,9 @@
 
 *Work in progress. A platform that deploys open-source T-Invest trading bots for customers through
 the Dokploy API. Designed: an orchestrated saga over a non-idempotent external API, transactional outbox
-with RabbitMQ, race-tested state transitions. Done so far: envelope encryption of customer secrets,
-append-only audit enforced by the database, log redaction, the api skeleton with integration tests.
+with RabbitMQ, race-tested state transitions. Done so far: Dokploy destinations with a client verified
+against a live Dokploy, operator sign-in with throttling, envelope encryption of customer secrets,
+append-only audit enforced by the database, log redaction, integration and race tests.
 Bun, NestJS, PostgreSQL.*
 
 ```

@@ -1,5 +1,5 @@
 import { Controller, Get, HttpCode, Inject, Logger, ServiceUnavailableException } from '@nestjs/common'
-import { Public } from '../../auth/presentation/session.guard'
+import { Public } from '../../../shared/http/public'
 import { READINESS_CHECKS, type ReadinessCheck } from '../domain/readiness-check'
 
 /**

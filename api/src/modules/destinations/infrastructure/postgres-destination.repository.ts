@@ -42,7 +42,7 @@ function isUniqueViolation(error: unknown): error is { code: '23505'; constraint
 }
 
 @Injectable()
-export class KyselyDestinationRepository implements DestinationRepository {
+export class PostgresDestinationRepository implements DestinationRepository {
   constructor(private readonly unitOfWork: UnitOfWork) {}
 
   async insert(destination: NewDestination): Promise<Destination> {

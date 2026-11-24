@@ -33,6 +33,10 @@ export class HttpExceptionFilter implements ExceptionFilter {
     }
 
     const status = exception.getStatus()
+    // Ошибка разбора JSON-тела: текст парсера повторяет кусок тела, а в теле бывают секреты
+    if (status === HttpStatus.BAD_REQUEST && isBodyParseError(exception)) {
+      return { status, body: { code: 'INVALID_JSON', message: 'request body is not valid JSON' } satisfies ErrorBody }
+    }
     if (exception instanceof NotFoundException && isNestRouteNotFound(exception)) {
       return { status, body: { code: 'NOT_FOUND', message: 'route not found' } satisfies ErrorBody }
     }
@@ -48,6 +52,14 @@ export class HttpExceptionFilter implements ExceptionFilter {
 /** Стандартная форма Nest: `{ statusCode, message, error? }` без своего `code` */
 function isNestDefault(payload: object): boolean {
   return 'statusCode' in payload && 'message' in payload && !('code' in payload)
+}
+
+/** Ошибка body-parser: исходная ошибка с `type: 'entity.parse.failed'` или `SyntaxError` в причине */
+function isBodyParseError(exception: HttpException): boolean {
+  const cause: unknown = exception.cause
+  if (cause instanceof SyntaxError) return true
+
+  return typeof cause === 'object' && cause !== null && 'type' in cause && cause.type === 'entity.parse.failed'
 }
 
 /** 404 роутера Nest: `Cannot GET /path?query` — путь из запроса, наружу не отдаётся */
