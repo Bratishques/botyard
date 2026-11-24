@@ -1,0 +1,13 @@
+node_modules/
+dist/
+coverage/
+.env
+.env.*
+!.env.example
+*.log
+.DS_Store
+.idea/
+.vscode/
+
+# локальный симлинк на общие навыки из ../api, вне рабочей области битый
+.claude/skills
