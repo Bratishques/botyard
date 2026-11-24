@@ -144,6 +144,14 @@ attempt, error, requestedBy, createdAt, finishedAt }`; `step` — текущий
 
 Другое действие в пути — `404 NOT_FOUND`.
 
+| Метод | Путь | Ответ |
+|---|---|---|
+| GET | `/deployments/:id/logs?tail=` | `200 { lines: [{ at, text }] }` — хвост логов робота (`tail` на каждую задачу swarm, по умолчанию 200, не больше 1000), по времени, токен вычищен |
+| GET | `/deployments/:id/logs/stream` | SSE: `log` — `{ at, text }`, сначала хвост, затем новые строки раз в 3 с; `error` — `{ code }` при сбое Dokploy |
+| GET | `/events/deployments` | SSE: `deployment` — `{ deploymentId }`, сигнал перечитать развёртывание через API |
+
+SSE требуют сессии, как и прочие ручки; пульс — комментарий раз в 25 с.
+
 Коды: `DEPLOYMENT_NOT_FOUND` (404); `DEPLOYMENT_OPERATION_IN_PROGRESS` (идёт другая операция — дождаться),
 `DEPLOYMENT_INVALID_STATE`, `DEPLOYMENT_VERSION_CONFLICT`, `IDEMPOTENCY_CONFLICT` (409); `DEPLOYMENT_INVALID_CONFIG`
 (пути полей без значений), `DEPLOYMENT_CUSTOMER_UNAVAILABLE`, `DEPLOYMENT_DESTINATION_UNAVAILABLE`,
@@ -182,3 +190,4 @@ attempt, error, requestedBy, createdAt, finishedAt }`; `step` — текущий
 - 2026-11-24 — `Idempotency-Key` помнится не меньше суток.
 - 2026-11-25 — вебхуки Dokploy: `POST /webhooks/dokploy/:destinationId`, `WEBHOOK_UNAUTHORIZED`.
 - 2026-11-25 — `drift` и `driftCheckedAt` в развёртывании.
+- 2026-11-25 — логи робота (`/deployments/:id/logs`, `/logs/stream`) и живой статус (`/events/deployments`) по SSE.

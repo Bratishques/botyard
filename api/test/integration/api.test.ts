@@ -12,6 +12,7 @@ import { AuditLog } from '../../src/shared/audit/audit'
 import { loadCatalogConfig, loadConfig } from '../../src/shared/config/config'
 import { SecretBox, secretContext } from '../../src/shared/crypto/secret-box'
 import { UnitOfWork } from '../../src/shared/database/unit-of-work'
+import { DEPLOYMENT_EVENTS, type DeploymentEvents } from '../../src/shared/realtime/deployment-events'
 import projectsFixture from '../fixtures/dokploy/project.all.json'
 import unauthorizedFixture from '../fixtures/dokploy/unauthorized.json'
 import buildSuccessFixture from '../fixtures/dokploy/webhook.build-success.json'
@@ -392,6 +393,28 @@ describe('клиенты по HTTP', () => {
 
     expect(live.status).toBe(409)
     expect(((await live.json()) as { code: string }).code).toBe('CUSTOMER_LIVE_CHECK_DISABLED')
+  })
+})
+
+describe('живой статус по SSE', () => {
+  test('поток /events/deployments доставляет событие «развёртывание изменилось»; уход клиента снимает подписку', async () => {
+    const cookie = await session()
+    const controller = new AbortController()
+    const response = await fetch(`${base}/events/deployments`, { headers: { cookie }, signal: controller.signal })
+    expect(response.status).toBe(200)
+    expect(response.headers.get('content-type')).toContain('text/event-stream')
+    const reader = response.body?.getReader()
+    if (!reader) throw new Error('no stream')
+    await reader.read() // `: connected`
+
+    const id = crypto.randomUUID()
+    app.get<DeploymentEvents>(DEPLOYMENT_EVENTS).changed(id)
+    let received = ''
+    while (!received.includes(id)) received += new TextDecoder().decode((await reader.read()).value)
+    expect(received).toContain(`event: deployment\ndata: {"deploymentId":"${id}"}`)
+
+    controller.abort()
+    expect((await fetch(`${base}/events/deployments`)).status).toBe(401)
   })
 })
 

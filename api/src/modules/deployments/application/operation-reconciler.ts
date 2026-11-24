@@ -4,6 +4,7 @@ import { AuditLog } from '../../../shared/audit/audit'
 import { UnitOfWork } from '../../../shared/database/unit-of-work'
 import { registry } from '../../../shared/observability/metrics'
 import { Outbox, OutboxTopic } from '../../../shared/outbox/outbox'
+import { DEPLOYMENT_EVENTS, type DeploymentEvents } from '../../../shared/realtime/deployment-events'
 import { OPERATION_STORE, type OperationStore, type StalledOperation } from '../domain/operation-store'
 import { OUTCOME, OUTCOME_IN_DOKPLOY } from '../domain/saga'
 
@@ -57,6 +58,7 @@ export class OperationReconciler {
     private readonly unitOfWork: UnitOfWork,
     private readonly outbox: Outbox,
     private readonly audit: AuditLog,
+    @Inject(DEPLOYMENT_EVENTS) private readonly events: DeploymentEvents,
   ) {}
 
   /** Один проход; сколько операций разбужено и сколько закрыто */
@@ -65,7 +67,10 @@ export class OperationReconciler {
     for (const stalled of await this.store.stalled(RECONCILE.idleMs, RECONCILE.batch)) {
       const limit = OUTCOME_IN_DOKPLOY.has(stalled.step) ? RECONCILE.maxKicksInDokploy : RECONCILE.maxKicks
       if (stalled.kicks >= limit) {
-        if (await this.giveUp(stalled)) result.abandoned++
+        if (await this.giveUp(stalled)) {
+          result.abandoned++
+          this.events.changed(stalled.deploymentId)
+        }
       } else if (await this.wake(stalled)) {
         result.kicked++
       }

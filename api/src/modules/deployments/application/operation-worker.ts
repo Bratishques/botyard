@@ -4,6 +4,7 @@ import { SecretBoxError } from '../../../shared/crypto/secret-box'
 import { UnitOfWork } from '../../../shared/database/unit-of-work'
 import { redactString } from '../../../shared/observability/redact'
 import { Outbox, OutboxTopic } from '../../../shared/outbox/outbox'
+import { DEPLOYMENT_EVENTS, type DeploymentEvents } from '../../../shared/realtime/deployment-events'
 import { TINVEST_ADDRESS } from '../../../shared/tinvest/tinvest'
 import { CATALOG_REPOSITORY, type CatalogRepository } from '../../catalog/domain/catalog'
 import { CustomerUseCases } from '../../customers/application/customer-use-cases'
@@ -73,6 +74,7 @@ export class OperationWorker {
     private readonly unitOfWork: UnitOfWork,
     private readonly outbox: Outbox,
     private readonly audit: AuditLog,
+    @Inject(DEPLOYMENT_EVENTS) private readonly events: DeploymentEvents,
   ) {}
 
   async handle(message: StepMessage): Promise<void> {
@@ -100,6 +102,8 @@ export class OperationWorker {
       outcome = this.outcomeOfError(claimed, error, secrets)
     }
     await this.apply(claimed, outcome)
+    // После коммита: админка перечитает развёртывание (шаг, попытка, итог)
+    this.events.changed(claimed.deploymentId)
   }
 
   private async execute(claimed: ClaimedStep, secrets: string[]): Promise<StepOutcome> {

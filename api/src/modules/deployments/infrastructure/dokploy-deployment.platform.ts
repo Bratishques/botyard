@@ -151,6 +151,17 @@ export class DokployDeploymentPlatform implements DeploymentPlatform {
     }
   }
 
+  async readLogs(target: PlatformTarget, appId: string, options: { tail: number; since?: string }): Promise<string> {
+    return call('application.readLogs', () =>
+      this.dokploy.query(
+        connection(target),
+        'application.readLogs',
+        { applicationId: appId, tail: String(options.tail), ...(options.since && { since: options.since }) },
+        z.string(),
+      ),
+    )
+  }
+
   async appStatus(target: PlatformTarget, appId: string): Promise<string> {
     try {
       const app = await this.dokploy.query(connection(target), 'application.one', { applicationId: appId }, appStatusSchema)

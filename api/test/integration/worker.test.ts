@@ -6,6 +6,7 @@ import { FilesystemCatalogSource } from '../../src/modules/catalog/infrastructur
 import { PostgresCatalogRepository } from '../../src/modules/catalog/infrastructure/postgres-catalog.repository'
 import { CustomerUseCases } from '../../src/modules/customers/application/customer-use-cases'
 import { PostgresCustomerRepository } from '../../src/modules/customers/infrastructure/postgres-customer.repository'
+import { DeploymentLogs } from '../../src/modules/deployments/application/deployment-logs'
 import { DeploymentUseCases } from '../../src/modules/deployments/application/deployment-use-cases'
 import { DokployWebhookHandler } from '../../src/modules/deployments/application/dokploy-webhook-handler'
 import { DriftReconciler } from '../../src/modules/deployments/application/drift-reconciler'
@@ -35,6 +36,7 @@ import { SecretBox } from '../../src/shared/crypto/secret-box'
 import { UnitOfWork } from '../../src/shared/database/unit-of-work'
 import { WebhookInbox } from '../../src/shared/inbox/inbox'
 import { Outbox } from '../../src/shared/outbox/outbox'
+import { LocalDeploymentEvents } from '../../src/shared/realtime/deployment-events'
 import { ROBOT_CA_MOUNT_PATH, TINVEST_ADDRESS } from '../../src/shared/tinvest/tinvest'
 import { FakeDokployNotifications, FakeTradingAccounts } from './fakes'
 import { db } from './setup'
@@ -130,6 +132,14 @@ class FakePlatform implements DeploymentPlatform {
   /** Удаление «прошло», а приложение осталось (Dokploy ответил 200, но не удалил) */
   keepOnDelete = false
 
+  /** Что отдаёт readLogs (строки `<время> <текст>`) */
+  logs = ''
+
+  async readLogs(target: PlatformTarget, _appId: string, _options: { tail: number; since?: string }): Promise<string> {
+    this.record('readLogs', target)
+    return this.logs
+  }
+
   /** Состояние приложения для сверки дрейфа: по умолчанию — по флагу running */
   statusOverride = new Map<string, string>()
 
@@ -149,6 +159,7 @@ class FakePlatform implements DeploymentPlatform {
 }
 
 const unitOfWork = new UnitOfWork(db)
+const events = new LocalDeploymentEvents()
 const audit = new AuditLog(unitOfWork)
 const box = new SecretBox([new LocalKeyEncryptionKey(1, randomBytes(32))])
 const outbox = new Outbox(unitOfWork)
@@ -169,7 +180,7 @@ const destinations = new DestinationUseCases(
   audit,
   new DestinationWebhooks(new PostgresDestinationWebhookRepository(unitOfWork), new FakeDokployNotifications(), loadConfig(), box),
 )
-const deployments = new DeploymentUseCases(new PostgresDeploymentRepository(unitOfWork), unitOfWork, outbox, audit)
+const deployments = new DeploymentUseCases(new PostgresDeploymentRepository(unitOfWork), unitOfWork, outbox, audit, events)
 
 function workerWith(platform: DeploymentPlatform): OperationWorker {
   return new OperationWorker(
@@ -183,6 +194,7 @@ function workerWith(platform: DeploymentPlatform): OperationWorker {
     unitOfWork,
     outbox,
     audit,
+    events,
   )
 }
 
@@ -708,7 +720,7 @@ describe('воркер саги: гонки и повторная доставк
 })
 
 describe('reconciler застрявших операций', () => {
-  const reconciler = new OperationReconciler(store, unitOfWork, outbox, audit)
+  const reconciler = new OperationReconciler(store, unitOfWork, outbox, audit, events)
   /** Команда потеряна: сообщения в outbox нет, операция без движения дольше порога */
   async function loseCommand(operationId: string, minutesAgo = 11) {
     await db.deleteFrom('outbox_message').where(sql<boolean>`payload->>'operationId' = ${operationId}`).execute()
@@ -852,7 +864,7 @@ describe('reconciler застрявших операций', () => {
     const { operation } = await provision()
     await loseCommand(operation.id)
 
-    await Promise.all([reconciler.tick(), new OperationReconciler(store, unitOfWork, outbox, audit).tick()])
+    await Promise.all([reconciler.tick(), new OperationReconciler(store, unitOfWork, outbox, audit, events).tick()])
 
     expect(await pending(operation.id)).toHaveLength(1)
     const row = await db.selectFrom('operation').select('context').where('id', '=', operation.id).executeTakeFirstOrThrow()
@@ -861,7 +873,7 @@ describe('reconciler застрявших операций', () => {
 })
 
 describe('вебхук Dokploy о сборке', () => {
-  const handler = new DokployWebhookHandler(store, new WebhookInbox(unitOfWork), outbox, unitOfWork)
+  const handler = new DokployWebhookHandler(store, new WebhookInbox(unitOfWork), outbox, unitOfWork, events)
 
   /** Довести provision до ожидания деплоя: шаг await_deploy отпущен на опрос */
   async function awaitingDeploy() {
@@ -920,7 +932,7 @@ describe('вебхук Dokploy о сборке', () => {
 
 describe('сверка дрейфа с Dokploy', () => {
   const reconciler = () =>
-    new DriftReconciler(new PostgresDeploymentRepository(unitOfWork), currentPlatform, destinations, unitOfWork, audit)
+    new DriftReconciler(new PostgresDeploymentRepository(unitOfWork), currentPlatform, destinations, unitOfWork, audit, events)
   let currentPlatform = new FakePlatform()
   const due = (id: string) => sql`UPDATE bot_deployment SET drift_checked_at = now() - interval '6 minutes' WHERE id = ${id}`.execute(db)
   const driftOfRow = async (id: string) =>
@@ -960,5 +972,25 @@ describe('сверка дрейфа с Dokploy', () => {
     expect(await new PostgresDeploymentRepository(unitOfWork).recordDrift(deployment.id, version, null)).toBe(false)
     await drive(workerWith(currentPlatform), redeploy.operation.id)
     expect(await driftOfRow(deployment.id)).toMatchObject({ status: 'RUNNING', drift: null })
+  })
+})
+
+describe('логи робота', () => {
+  test('строки по времени, токен клиента и ключ Dokploy вычищены; развёртывание без приложения — пусто', async () => {
+    const platform = new FakePlatform()
+    const { deployment } = await running(platform)
+    platform.logs = [`2026-11-24T21:24:37.000000000Z token ${TOKEN} key ${DOKPLOY_KEY}`, '2026-11-24T21:24:30.000000000Z started'].join(
+      '\n',
+    )
+    const reader = new DeploymentLogs(new PostgresDeploymentRepository(unitOfWork), platform, destinations, customers)
+
+    const lines = await reader.read(deployment.id, { tail: 50 })
+
+    expect(lines.map((line) => line.at)).toEqual(['2026-11-24T21:24:30.000000000Z', '2026-11-24T21:24:37.000000000Z'])
+    expect(JSON.stringify(lines)).not.toContain(TOKEN)
+    expect(JSON.stringify(lines)).not.toContain(DOKPLOY_KEY)
+
+    const fresh = await provision()
+    expect(await reader.read(fresh.deployment.id, { tail: 50 })).toEqual([])
   })
 })

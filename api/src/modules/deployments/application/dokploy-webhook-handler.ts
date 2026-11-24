@@ -5,6 +5,7 @@ import { UnitOfWork } from '../../../shared/database/unit-of-work'
 import { WebhookInbox } from '../../../shared/inbox/inbox'
 import { registry } from '../../../shared/observability/metrics'
 import { Outbox, OutboxTopic } from '../../../shared/outbox/outbox'
+import { DEPLOYMENT_EVENTS, type DeploymentEvents } from '../../../shared/realtime/deployment-events'
 import { OPERATION_STORE, type OperationStore } from '../domain/operation-store'
 
 const received = new Counter({
@@ -38,9 +39,11 @@ export class DokployWebhookHandler {
     private readonly inbox: WebhookInbox,
     private readonly outbox: Outbox,
     private readonly unitOfWork: UnitOfWork,
+    @Inject(DEPLOYMENT_EVENTS) private readonly events: DeploymentEvents,
   ) {}
 
   async handle(destinationId: string, event: BuildEvent): Promise<WebhookResult> {
+    let nudged: string | null = null
     const result = await this.unitOfWork.run(async (): Promise<WebhookResult> => {
       const dedupKey = createHash('sha256')
         .update([destinationId, event.applicationName, event.status, event.timestamp].join('\n'))
@@ -59,10 +62,12 @@ export class DokployWebhookHandler {
         step: awaiting.step,
         wake,
       })
+      nudged = awaiting.deploymentId
 
       return 'nudged'
     })
     received.inc({ result })
+    if (nudged) this.events.changed(nudged)
 
     return result
   }

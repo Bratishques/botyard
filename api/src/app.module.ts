@@ -19,6 +19,7 @@ import { HttpMetricsMiddleware } from './shared/observability/http-metrics.middl
 import { loggerOptions } from './shared/observability/logger'
 import { MetricsServer } from './shared/observability/metrics'
 import { OutboxModule } from './shared/outbox/outbox'
+import { RealtimeModule } from './shared/realtime/deployment-events'
 
 @Module({})
 export class AppModule implements NestModule {
@@ -36,6 +37,7 @@ export class AppModule implements NestModule {
         IdempotencyModule,
         HousekeepingModule,
         InboxModule,
+        RealtimeModule,
         HealthModule,
         AuthModule,
         DestinationsModule,

@@ -90,6 +90,8 @@ const schema = z
       .transform((value) => value === 'true'),
     // Брокер нужен relay и воркеру; процесс http без него обходится
     RABBITMQ_URL: z.url({ protocol: /^amqps?$/ }).optional(),
+    // Redis для живого статуса в админке между процессами (SSE). Нет — события только внутри процесса
+    REDIS_URL: z.url({ protocol: /^rediss?$/ }).optional(),
     // Адрес api, по которому до него достучится Dokploy (вебхуки о сборке). Нет — вебхуки не регистрируются,
     // исход деплоя узнаётся только опросом. Без завершающего слэша
     PUBLIC_API_URL: z

@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common'
 import { CatalogModule } from '../catalog/catalog.module'
 import { CustomersModule } from '../customers/customers.module'
 import { DestinationsModule } from '../destinations/destinations.module'
+import { DeploymentLogs } from './application/deployment-logs'
 import { DeploymentUseCases } from './application/deployment-use-cases'
 import { DokployWebhookHandler } from './application/dokploy-webhook-handler'
 import { DriftReconciler } from './application/drift-reconciler'
@@ -15,12 +16,13 @@ import { DokployDeploymentPlatform } from './infrastructure/dokploy-deployment.p
 import { HandlebarsConfigRenderer } from './infrastructure/handlebars-config.renderer'
 import { PostgresDeploymentRepository } from './infrastructure/postgres-deployment.repository'
 import { PostgresOperationStore } from './infrastructure/postgres-operation.store'
+import { DeploymentEventsController } from './presentation/deployment-events.controller'
 import { DeploymentsController } from './presentation/deployments.controller'
 import { DokployWebhookController } from './presentation/dokploy-webhook.controller'
 
 @Module({
   imports: [CatalogModule, CustomersModule, DestinationsModule],
-  controllers: [DeploymentsController, DokployWebhookController],
+  controllers: [DeploymentsController, DokployWebhookController, DeploymentEventsController],
   providers: [
     { provide: DEPLOYMENT_REPOSITORY, useClass: PostgresDeploymentRepository },
     { provide: OPERATION_STORE, useClass: PostgresOperationStore },
@@ -31,6 +33,7 @@ import { DokployWebhookController } from './presentation/dokploy-webhook.control
     OperationReconciler,
     DokployWebhookHandler,
     DriftReconciler,
+    DeploymentLogs,
   ],
   exports: [DeploymentUseCases, OperationWorker, OperationReconciler, DriftReconciler],
 })

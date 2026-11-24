@@ -4,6 +4,7 @@ import { AuditLog } from '../../../shared/audit/audit'
 import { configSchemaValidator } from '../../../shared/catalog/config-validator'
 import { UnitOfWork } from '../../../shared/database/unit-of-work'
 import { Outbox, OutboxTopic } from '../../../shared/outbox/outbox'
+import { DEPLOYMENT_EVENTS, type DeploymentEvents } from '../../../shared/realtime/deployment-events'
 import { modeOf } from '../../customers/domain/customer'
 import {
   appNameOf,
@@ -37,6 +38,7 @@ export class DeploymentUseCases {
     private readonly unitOfWork: UnitOfWork,
     private readonly outbox: Outbox,
     private readonly audit: AuditLog,
+    @Inject(DEPLOYMENT_EVENTS) private readonly events: DeploymentEvents,
   ) {}
 
   list(): Promise<Deployment[]> {
@@ -53,8 +55,8 @@ export class DeploymentUseCases {
    * Новое развёртывание. Основание (клиент, назначение, шаблон) читается под блокировкой в той же
    * транзакции: архивация клиента или выключение назначения не проскочат между проверкой и записью.
    */
-  create(input: CreateDeploymentInput, actor: string): Promise<{ deployment: Deployment; operation: Operation }> {
-    return this.unitOfWork.run(async () => {
+  async create(input: CreateDeploymentInput, actor: string): Promise<{ deployment: Deployment; operation: Operation }> {
+    const created = await this.unitOfWork.run(async () => {
       const basis = await this.repository.lockBasis(input.customerId, input.destinationId, input.templateId)
       if (basis.customer?.status !== 'ACTIVE') {
         throw new DeploymentError(DeploymentErrorCode.CUSTOMER_UNAVAILABLE, 'customer is missing or archived')
@@ -116,6 +118,9 @@ export class DeploymentUseCases {
 
       return { deployment, operation }
     })
+    this.events.changed(created.deployment.id)
+
+    return created
   }
 
   /**
@@ -124,7 +129,7 @@ export class DeploymentUseCases {
    * будет дождано и увидено, а начатое позже дождётся этой транзакции. Запуск, принятый до выключения,
    * воркер ещё раз сверит с назначением перед вызовом Dokploy (этап 2, шаг 3).
    */
-  operate(
+  async operate(
     id: string,
     kind: Exclude<OperationKind, 'PROVISION'>,
     version: number,
@@ -132,7 +137,7 @@ export class DeploymentUseCases {
   ): Promise<{ deployment: Deployment; operation: Operation }> {
     const rule = OPERATION_RULES[kind]
 
-    return this.unitOfWork.run(async () => {
+    const operated = await this.unitOfWork.run(async () => {
       const operationId = Bun.randomUUIDv7()
       const claimed = await this.repository.claim(id, version, operationId, rule.from, rule.claimAs)
       if (!claimed) throw await this.whyNotClaimed(id, version, rule.from)
@@ -152,6 +157,9 @@ export class DeploymentUseCases {
 
       return { deployment: claimed, operation }
     })
+    this.events.changed(id)
+
+    return operated
   }
 
   /** Условная запись не прошла — объяснить почему, по свежему состоянию */

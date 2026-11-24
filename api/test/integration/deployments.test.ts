@@ -17,12 +17,14 @@ import { SecretBox } from '../../src/shared/crypto/secret-box'
 import { UnitOfWork } from '../../src/shared/database/unit-of-work'
 import { Idempotency, IdempotencyConflictError } from '../../src/shared/idempotency/idempotency'
 import { Outbox, OutboxTopic } from '../../src/shared/outbox/outbox'
+import { LocalDeploymentEvents } from '../../src/shared/realtime/deployment-events'
 import { FakeTradingAccounts } from './fakes'
 import { db } from './setup'
 
 const unitOfWork = new UnitOfWork(db)
+const events = new LocalDeploymentEvents()
 const audit = new AuditLog(unitOfWork)
-const deployments = new DeploymentUseCases(new PostgresDeploymentRepository(unitOfWork), unitOfWork, new Outbox(unitOfWork), audit)
+const deployments = new DeploymentUseCases(new PostgresDeploymentRepository(unitOfWork), unitOfWork, new Outbox(unitOfWork), audit, events)
 const customers = new CustomerUseCases(
   new PostgresCustomerRepository(unitOfWork),
   new SecretBox([new LocalKeyEncryptionKey(1, randomBytes(32))]),

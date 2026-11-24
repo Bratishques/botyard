@@ -3,6 +3,7 @@ import { Counter } from 'prom-client'
 import { AuditLog } from '../../../shared/audit/audit'
 import { UnitOfWork } from '../../../shared/database/unit-of-work'
 import { registry } from '../../../shared/observability/metrics'
+import { DEPLOYMENT_EVENTS, type DeploymentEvents } from '../../../shared/realtime/deployment-events'
 import { DestinationUseCases } from '../../destinations/application/destination-use-cases'
 import { DEPLOYMENT_REPOSITORY, type Deployment, type DeploymentRepository, driftOf } from '../domain/deployment'
 import { DEPLOYMENT_PLATFORM, type DeploymentPlatform } from '../domain/deployment-platform'
@@ -43,13 +44,17 @@ export class DriftReconciler {
     private readonly destinations: DestinationUseCases,
     private readonly unitOfWork: UnitOfWork,
     private readonly audit: AuditLog,
+    @Inject(DEPLOYMENT_EVENTS) private readonly events: DeploymentEvents,
   ) {}
 
   async tick(): Promise<{ checked: number; changed: number }> {
     const result = { checked: 0, changed: 0 }
     for (const deployment of await this.deployments.dueForDriftCheck(DRIFT.intervalMs, DRIFT.batch)) {
       result.checked++
-      if (await this.check(deployment)) result.changed++
+      if (await this.check(deployment)) {
+        result.changed++
+        this.events.changed(deployment.id)
+      }
     }
 
     return result

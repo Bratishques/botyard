@@ -53,3 +53,19 @@ export interface DeploymentView {
   createdAt: string
   updatedAt: string
 }
+
+/** Строка лога робота: время от Docker (RFC3339Nano) и текст с вычищенными секретами */
+export interface LogLine {
+  at: string
+  text: string
+}
+
+/** `GET /deployments/:id/logs`; живые логи — SSE `GET /deployments/:id/logs/stream`, события `log` с `LogLine` */
+export interface DeploymentLogsView {
+  lines: LogLine[]
+}
+
+/** SSE `GET /events/deployments`, событие `deployment`: перечитать это развёртывание через API */
+export interface DeploymentChangedEvent {
+  deploymentId: string
+}

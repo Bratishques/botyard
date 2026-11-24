@@ -63,6 +63,11 @@ export interface DeploymentPlatform {
    * запущено), `error` (сборка упала); `missing` — приложения нет. Работает ли сам контейнер, отсюда не видно
    */
   appStatus(target: PlatformTarget, appId: string): Promise<string>
+  /**
+   * Логи контейнеров приложения: строки `<время RFC3339Nano> <текст>`, `tail` последних, `since` — не раньше
+   * этого момента (RFC3339). Строки разных задач swarm перемешаны
+   */
+  readLogs(target: PlatformTarget, appId: string, options: { tail: number; since?: string }): Promise<string>
 }
 
 export const DEPLOYMENT_PLATFORM = Symbol('DEPLOYMENT_PLATFORM')
