@@ -1,4 +1,5 @@
 import { isIP } from 'node:net'
+import path from 'node:path'
 import { z } from 'zod'
 import { SecretValue } from './secret-value'
 
@@ -116,6 +117,20 @@ const databaseOnly = z.object({ DATABASE_URL: schema.shape.DATABASE_URL })
 export function loadDatabaseConfig(env: Record<string, string | undefined> = process.env): { DATABASE_URL: string } {
   const parsed = databaseOnly.safeParse(env)
   if (!parsed.success) throw new Error(`invalid environment: DATABASE_URL: ${parsed.error.issues[0]?.message ?? 'invalid'}`)
+
+  return parsed.data
+}
+
+/** Каталог роботов по умолчанию — папка `bots` монорепозитория. `import.meta.dir` — обычный путь, без %20 */
+const DEFAULT_BOTS_DIR = path.resolve(import.meta.dir, '../../../../bots')
+
+const catalogOnly = z.object({ BOTS_CATALOG_DIR: z.string().trim().min(1).default(DEFAULT_BOTS_DIR) })
+
+/** Для синхронизации каталога: только путь к репозиторию `bots` (templates/ и schema/) */
+export function loadCatalogConfig(env: Record<string, string | undefined> = process.env): { BOTS_CATALOG_DIR: string } {
+  const value = env.BOTS_CATALOG_DIR?.trim() ? env.BOTS_CATALOG_DIR : undefined
+  const parsed = catalogOnly.safeParse({ BOTS_CATALOG_DIR: value })
+  if (!parsed.success) throw new Error('invalid environment: BOTS_CATALOG_DIR')
 
   return parsed.data
 }

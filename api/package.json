@@ -14,12 +14,15 @@
     "migrate": "bun src/cli/migrate.ts",
     "check": "bun run lint && bun run typecheck && bun run test",
     "test:contract": "bun test test/contract",
-    "operator:create": "bun src/cli/create-operator.ts"
+    "operator:create": "bun src/cli/create-operator.ts",
+    "catalog:sync": "bun src/cli/sync-catalog.ts"
   },
   "dependencies": {
     "@nestjs/common": "^12.6.0",
     "@nestjs/core": "^12.6.0",
     "@nestjs/platform-express": "^12.6.0",
+    "ajv": "^8.20.0",
+    "ajv-formats": "^3.0.1",
     "kysely": "^0.29.9",
     "nestjs-pino": "^5.3.2",
     "pg": "^8.23.1",

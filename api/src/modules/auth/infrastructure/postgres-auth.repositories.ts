@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common'
+import { isUniqueViolation } from '../../../shared/database/pg-errors'
 import { UnitOfWork } from '../../../shared/database/unit-of-work'
 import {
   AuthError,
@@ -76,8 +77,4 @@ export class PostgresSessionRepository implements SessionRepository {
 
     return row?.operator_id ?? null
   }
-}
-
-function isUniqueViolation(error: unknown): boolean {
-  return typeof error === 'object' && error !== null && 'code' in error && error.code === '23505'
 }

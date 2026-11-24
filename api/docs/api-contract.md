@@ -76,8 +76,39 @@
 | `DESTINATION_UNREACHABLE` | 503 | Dokploy недоступен или ответил непонятно |
 | `DESTINATION_RATE_LIMITED` | 503 | ключ Dokploy исчерпал свой лимит — выпустить ключ без лимита |
 
+## Каталог роботов
+
+| Метод | Путь | Ответ |
+|---|---|---|
+| GET | `/templates` | `200 Template[]` — действующие шаблоны |
+| GET | `/templates/:id` | `200 Template` — в том числе выведенный (`retired: true`): на него ссылаются развёрнутые роботы; `404 CATALOG_TEMPLATE_NOT_FOUND` |
+
+`Template`: `{ id, name, description, currentVersion, retired, delivery: "env" | "file", configSchema, upstream: { gitUrl, ref, license } }`.
+`configSchema` — JSON Schema (draft 2020-12) конфига робота: по ней админка строит форму развёртывания.
+
+## Клиенты
+
+`Customer`: `{ id, name, accountId, tokenHint, mode: "sandbox" | "live", status: "ACTIVE" | "ARCHIVED", version, createdAt, updatedAt }`.
+Токен T-Invest в ответах не возвращается; принимается токен от 16 символов. Клиент создаётся в песочнице.
+
+| Метод | Путь | Тело | Ответ |
+|---|---|---|---|
+| GET | `/customers` | — | `200 Customer[]` |
+| GET | `/customers/:id` | — | `200 Customer`, `404 CUSTOMER_NOT_FOUND` |
+| POST | `/customers` | `{ name, accountId, token }` | `201 Customer` |
+| PATCH | `/customers/:id` | `{ version, name?, accountId?, confirmName? }` | `200 Customer`; смена счёта клиента в боевом режиме — только с `confirmName` (точное имя), иначе `422 CUSTOMER_LIVE_CONFIRMATION_REQUIRED` |
+| POST | `/customers/:id/token` | `{ version, token }` | `200 Customer` — новый токен того же режима |
+| POST | `/customers/:id/live` | `{ version, token, accountId, confirmName }` | `200 Customer`; боевой токен и боевой счёт (счета песочницы и боевые разные); `confirmName` — точное имя клиента, иначе `422 CUSTOMER_LIVE_CONFIRMATION_REQUIRED` |
+| POST | `/customers/:id/sandbox` | `{ version, token, accountId }` | `200 Customer` — назад в песочницу с токеном и счётом песочницы |
+| POST | `/customers/:id/archive` | `{ version }` | `200 Customer`; повтор после обрыва с прежней версией — тот же клиент без изменений. Разархивации нет, имя архивного клиента остаётся занятым |
+
+Коды: `CUSTOMER_NOT_FOUND` (404); `CUSTOMER_NAME_TAKEN`, `CUSTOMER_VERSION_CONFLICT`, `CUSTOMER_ALREADY_IN_MODE`,
+`CUSTOMER_ARCHIVED` (409); `CUSTOMER_INVALID_NAME`, `CUSTOMER_INVALID_ACCOUNT` (400); `CUSTOMER_LIVE_CONFIRMATION_REQUIRED` (422).
+
 ## Журнал
 
 - 2026-11-24 — служебные ручки health.
 - 2026-11-24 — вход операторов, назначения, единый формат ошибок `{ code, message }`, 404 без пути запроса.
 - 2026-11-24 — лимит входов (`429 LOGIN_THROTTLED`, `503 LOGIN_BUSY`), публичный выход, `INVALID_JSON`, ключ от 16 символов.
+- 2026-11-24 — каталог роботов и клиенты.
+- 2026-11-24 — счёт обязателен при смене режима, смена счёта боевого клиента — с подтверждением.
