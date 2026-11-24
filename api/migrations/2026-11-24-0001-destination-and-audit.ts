@@ -16,14 +16,19 @@ export async function up(db: Kysely<unknown>): Promise<void> {
   await sql`
     CREATE TABLE destination (
       id              uuid PRIMARY KEY,
-      name            text NOT NULL CHECK (name = btrim(name) AND length(name) BETWEEN 1 AND 80),
-      -- Нормализованный адрес: схема и хост в нижнем регистре, без косой черты в конце
-      base_url        text NOT NULL CHECK (base_url ~ '^https?://[a-z0-9.-]+(:[0-9]+)?(/[^?#]*[^/?#])?$'),
+      name            text NOT NULL CHECK (name !~ '^[[:space:]]|[[:space:]]$' AND length(name) BETWEEN 1 AND 80),
+      -- Нормализованный адрес: схема и хост в нижнем регистре, без точки в конце хоста,
+      -- без порта по умолчанию и без косой черты в конце — иначе один Dokploy заводится дважды
+      base_url        text NOT NULL CHECK (
+        base_url ~ '^https?://[a-z0-9-]+([.][a-z0-9-]+)*(:[0-9]+)?(/[^?#]*[^/?#])?$'
+        AND base_url !~ '^https://[^/]+:443(/|$)'
+        AND base_url !~ '^http://[^/]+:80(/|$)'
+      ),
       api_key_sealed  bytea NOT NULL CHECK (octet_length(api_key_sealed) > 0),
-      api_key_hint    text NOT NULL CHECK (length(api_key_hint) > 0),
-      project_id      text NOT NULL CHECK (length(project_id) > 0),
-      environment_id  text NOT NULL CHECK (length(environment_id) > 0),
-      server_id       text CHECK (server_id IS NULL OR length(server_id) > 0),
+      api_key_hint    text NOT NULL CHECK (btrim(api_key_hint) <> ''),
+      project_id      text NOT NULL CHECK (btrim(project_id) <> ''),
+      environment_id  text NOT NULL CHECK (btrim(environment_id) <> ''),
+      server_id       text CHECK (server_id IS NULL OR btrim(server_id) <> ''),
       status          text NOT NULL DEFAULT 'ACTIVE' CHECK (status IN ('ACTIVE', 'UNREACHABLE', 'DISABLED')),
       last_checked_at timestamptz,
       last_error      text,
@@ -43,9 +48,9 @@ export async function up(db: Kysely<unknown>): Promise<void> {
   await sql`
     CREATE TABLE audit_event (
       id          uuid PRIMARY KEY,
-      actor       text NOT NULL CHECK (length(actor) > 0),
-      action      text NOT NULL CHECK (length(action) > 0),
-      target_type text NOT NULL CHECK (length(target_type) > 0),
+      actor       text NOT NULL CHECK (btrim(actor) <> ''),
+      action      text NOT NULL CHECK (btrim(action) <> ''),
+      target_type text NOT NULL CHECK (btrim(target_type) <> ''),
       target_id   text,
       payload     jsonb NOT NULL DEFAULT '{}'::jsonb CHECK (jsonb_typeof(payload) = 'object'),
       created_at  timestamptz NOT NULL DEFAULT now()
@@ -68,6 +73,19 @@ export async function up(db: Kysely<unknown>): Promise<void> {
   await sql`
     CREATE TRIGGER audit_event_append_only BEFORE UPDATE OR DELETE ON audit_event
     FOR EACH ROW EXECUTE FUNCTION audit_event_append_only()
+  `.execute(db)
+  // Время события ставит база, а не вызывающий: журнал с подставленным временем ничего не доказывает
+  await sql`
+    CREATE FUNCTION audit_event_stamp() RETURNS trigger LANGUAGE plpgsql AS $$
+    BEGIN
+      NEW.created_at := now();
+      RETURN NEW;
+    END
+    $$
+  `.execute(db)
+  await sql`
+    CREATE TRIGGER audit_event_stamp BEFORE INSERT ON audit_event
+    FOR EACH ROW EXECUTE FUNCTION audit_event_stamp()
   `.execute(db)
   await sql`
     CREATE TRIGGER audit_event_no_truncate BEFORE TRUNCATE ON audit_event

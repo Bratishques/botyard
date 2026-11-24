@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { SecretValue } from './secret-value'
 
 export const ProcessRole = {
   HTTP: 'http',
@@ -20,6 +21,7 @@ const masterKey = z
   .regex(/^[A-Za-z0-9+/]+={0,2}$/, 'must be base64')
   .transform((value) => Buffer.from(value, 'base64'))
   .refine((key) => key.length === 32, 'must decode to exactly 32 bytes')
+  .transform((key) => new SecretValue(key))
 
 const flag = z
   .enum(['true', 'false'])
@@ -30,8 +32,8 @@ const flag = z
  * Окружение читается и проверяется один раз при старте. Процесс с битой переменной не поднимается:
  * лучше упасть на деплое, чем узнать о пустом мастер-ключе на первом сохранённом секрете.
  *
- * `NODE_ENV` здесь нет намеренно: Bun сам ставит его в `development`, если переменная не задана,
- * поэтому признаком окружения он служить не может. Всё, что отличает разработку, — явные флаги.
+ * `NODE_ENV` здесь нет намеренно: под `bun test` Bun ставит его в `test`, а в образе его легко
+ * забыть — признак окружения из него ненадёжный. Всё, что отличает разработку, — явные флаги.
  */
 const schema = z
   .object({

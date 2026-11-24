@@ -75,6 +75,12 @@ describe('destination', () => {
 
   test.each([
     ['имя с пробелом по краю', { name: 'prod ' }],
+    ['имя с табом по краю', { name: 'prod\t' }],
+    ['хост с точкой в конце', { base_url: 'https://dot.example.com.' }],
+    ['https с портом по умолчанию', { base_url: 'https://port.example.com:443' }],
+    ['http с портом по умолчанию', { base_url: 'http://port.example.com:80/api' }],
+    ['подсказка из пробелов', { api_key_hint: '  ' }],
+    ['окружение из пробелов', { environment_id: ' ' }],
     ['адрес с косой чертой в конце', { base_url: 'https://slash.example.com/' }],
     ['адрес в верхнем регистре', { base_url: 'https://Upper.example.com' }],
     ['пустой конверт', { api_key_sealed: new Uint8Array() }],
@@ -89,6 +95,14 @@ describe('destination', () => {
 })
 
 describe('audit_event', () => {
+  test('время события ставит база, даже если вставка передала своё', async () => {
+    const id = Bun.randomUUIDv7()
+    await sql`INSERT INTO audit_event (id, actor, action, target_type, created_at) VALUES (${id}, 'a', 'b', 'c', '2000-01-01')`.execute(db)
+    const row = await db.selectFrom('audit_event').select('created_at').where('id', '=', id).executeTakeFirstOrThrow()
+
+    expect(row.created_at.getFullYear()).toBeGreaterThan(2000)
+  })
+
   const event = () => ({ id: Bun.randomUUIDv7(), actor: 'operator:1', action: 'destination.created', target_type: 'destination' })
 
   test('payload — только объект', async () => {

@@ -6,8 +6,9 @@ import type { Db } from './database'
 export const MIGRATIONS_DIR = path.resolve(import.meta.dir, '../../../migrations')
 
 /**
- * Миграции только вперёд. `down` в файлах есть для локальной отладки, но в процессе деплоя
- * не вызывается: откат схемы на живых данных — отдельное решение, а не кнопка.
+ * Миграции только вперёд, `down` в файлах нет: откат схемы на живых данных — отдельное решение,
+ * а не кнопка. Применённую миграцию не правят: Kysely сверяет только имена файлов, и база,
+ * накатанная старой версией, молча останется без изменений.
  */
 export async function migrateToLatest(db: Db): Promise<MigrationResultSet> {
   const migrator = new Migrator({
