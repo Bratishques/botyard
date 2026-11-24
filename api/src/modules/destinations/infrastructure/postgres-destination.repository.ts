@@ -78,6 +78,33 @@ export class PostgresDestinationRepository implements DestinationRepository {
     return rows.map(toDomain)
   }
 
+  async hasLiveDeployments(id: string): Promise<boolean> {
+    const db = this.unitOfWork.db()
+    await db.selectFrom('destination').select('id').where('id', '=', id).forUpdate().execute()
+    const live = await db
+      .selectFrom('bot_deployment')
+      .select('id')
+      .where('destination_id', '=', id)
+      .where('status', '<>', 'DELETED')
+      .limit(1)
+      .execute()
+
+    return live.length > 0
+  }
+
+  async liveApplicationIds(id: string): Promise<string[]> {
+    const rows = await this.unitOfWork
+      .db()
+      .selectFrom('bot_deployment')
+      .select('dokploy_app_id')
+      .where('destination_id', '=', id)
+      .where('status', '<>', 'DELETED')
+      .where('dokploy_app_id', 'is not', null)
+      .execute()
+
+    return rows.flatMap((row) => (row.dokploy_app_id ? [row.dokploy_app_id] : []))
+  }
+
   async update(
     id: string,
     expectedVersion: number,

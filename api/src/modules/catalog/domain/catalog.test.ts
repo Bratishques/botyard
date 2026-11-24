@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test'
-import { canonicalJson, type TemplateSource, templateVersion } from './catalog'
+import { canonicalJson } from '../../../shared/json/canonical-json'
+import { type TemplateSource, templateVersion } from './catalog'
 
 const source: TemplateSource = {
   manifest: {
@@ -8,6 +9,7 @@ const source: TemplateSource = {
     upstream: { gitUrl: 'https://github.com/elkopass/BITA.git', ref: 'main', license: 'Apache-2.0' },
     build: { type: 'dockerfile', dockerfile: 'cmd/trade-bot/Dockerfile', context: '.' },
     config: { delivery: 'env', schema: { type: 'object' }, env: { A: '1' } },
+    security: { verifiesTls: true },
   },
   files: {},
 }

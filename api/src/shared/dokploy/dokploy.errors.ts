@@ -27,7 +27,7 @@ export class DokployRejectedError extends DokployError {
 }
 
 export class DokployUnavailableError extends DokployError {
-  override readonly name = 'DokployUnavailableError'
+  override readonly name: string = 'DokployUnavailableError'
 
   constructor(
     message: string,
@@ -36,6 +36,11 @@ export class DokployUnavailableError extends DokployError {
   ) {
     super(message, options)
   }
+}
+
+/** Ответа не дождались за таймаут: исход неизвестен. Подвид недоступности — так его и обрабатывают вызывающие */
+export class DokployTimeoutError extends DokployUnavailableError {
+  override readonly name = 'DokployTimeoutError'
 }
 
 export class DokployResponseError extends DokployError {

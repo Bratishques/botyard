@@ -42,7 +42,8 @@ beforeEach(async () => {
   dir = await mkdtemp(path.join(tmpdir(), 'botyard-catalog-'))
   await cp(BOTS, dir, { recursive: true })
   // Тесты каталога начинают с пустого каталога; TRUNCATE версий триггер неизменности не запрещает (он на строки)
-  await sql`TRUNCATE bot_template_version, bot_template`.execute(db)
+  // CASCADE: на версии ссылаются развёртывания других тестов; каждый файл тестов заводит свои данные сам
+  await sql`TRUNCATE bot_template_version, bot_template CASCADE`.execute(db)
 })
 
 afterEach(async () => {
@@ -225,5 +226,33 @@ describe('синхронизация каталога', () => {
 
   test('неверный путь каталога — понятная ошибка, а не стек', async () => {
     await expect(syncFrom(path.join(dir, 'nowhere'))).rejects.toMatchObject({ code: 'CATALOG_INVALID_MANIFEST' })
+  })
+
+  test('опечатка в переменной шаблона конфига — отказ при синхронизации, а не пустое значение в роботе', async () => {
+    const file = path.join(dir, 'templates', 'contest-2022', 'config.toml.tpl')
+    await writeFile(file, (await readFile(file, 'utf8')).replace('{{ platform.tinvestAddress }}', '{{ config.apiAddress }}'))
+
+    await expect(sync()).rejects.toThrow('unknown variable "config.apiAddress"')
+  })
+
+  test('шаблон не может занять имена платформы: SSL_CERT_FILE и папку корня сертификатов', async () => {
+    await setIn('bita', ['config', 'env', 'SSL_CERT_FILE'], '/tmp/evil.pem')
+    await expect(sync()).rejects.toThrow('SSL_CERT_FILE is set by the platform')
+
+    await setIn('bita', ['config', 'env', 'SSL_CERT_FILE'], undefined)
+    await setIn('contest-2022', ['config', 'mountPath'], '/etc/ssl/botyard/config.toml')
+    await expect(sync()).rejects.toThrow('/etc/ssl/botyard is used by the platform')
+  })
+
+  test('имя переменной env — только по шаблону: пробел или перевод строки в имени обошли бы резерв платформы', async () => {
+    await setIn('bita', ['config', 'env', 'SSL_CERT_DIR '], '/x')
+
+    await expect(sync()).rejects.toThrow('must match pattern')
+  })
+
+  test('манифест без security.verifiesTls отклоняется: автор робота обязан сказать, проверяет ли робот TLS', async () => {
+    await setIn('bita', ['security'], undefined)
+
+    await expect(sync()).rejects.toThrow("must have required property 'security'")
   })
 })

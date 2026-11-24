@@ -60,6 +60,20 @@ export class PostgresCustomerRepository implements CustomerRepository {
     return (await this.unitOfWork.db().selectFrom('customer').select(COLUMNS).orderBy('created_at').execute()).map(toDomain)
   }
 
+  async hasLiveDeployments(id: string): Promise<boolean> {
+    const db = this.unitOfWork.db()
+    await db.selectFrom('customer').select('id').where('id', '=', id).forUpdate().execute()
+    const live = await db
+      .selectFrom('bot_deployment')
+      .select('id')
+      .where('customer_id', '=', id)
+      .where('status', '<>', 'DELETED')
+      .limit(1)
+      .execute()
+
+    return live.length > 0
+  }
+
   async update(id: string, expectedVersion: number, changes: CustomerChanges): Promise<Customer | null> {
     try {
       const row = await this.unitOfWork

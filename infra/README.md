@@ -15,3 +15,5 @@ docker compose -f docker-compose.dev.yml up -d --wait
 | Postgres | `postgres://botyard:botyard@localhost:55432/botyard`, тестовая база `botyard_test` | — |
 | RabbitMQ | `amqp://botyard:botyard@localhost:55672`, UI `http://localhost:55673` | botyard / botyard |
 | Redis | `redis://localhost:56379` | — |
+
+RabbitMQ 4 не разрешает временные неэксклюзивные очереди — очереди Botyard устойчивые (`durable`).

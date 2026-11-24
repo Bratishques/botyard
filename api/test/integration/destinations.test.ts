@@ -1,13 +1,16 @@
-import { beforeEach, describe, expect, test } from 'bun:test'
+import { beforeAll, beforeEach, describe, expect, test } from 'bun:test'
 import { randomBytes } from 'node:crypto'
 import { sql } from 'kysely'
+import { SyncCatalog } from '../../src/modules/catalog/application/sync-catalog'
+import { FilesystemCatalogSource } from '../../src/modules/catalog/infrastructure/filesystem-catalog.source'
+import { PostgresCatalogRepository } from '../../src/modules/catalog/infrastructure/postgres-catalog.repository'
 import { DestinationSecrets } from '../../src/modules/destinations/application/destination-secrets'
 import { DestinationUseCases } from '../../src/modules/destinations/application/destination-use-cases'
 import { DestinationErrorCode } from '../../src/modules/destinations/domain/destination'
 import type { DokployCatalog } from '../../src/modules/destinations/domain/ports'
 import { PostgresDestinationRepository } from '../../src/modules/destinations/infrastructure/postgres-destination.repository'
 import { AuditLog } from '../../src/shared/audit/audit'
-import { loadConfig } from '../../src/shared/config/config'
+import { loadCatalogConfig, loadConfig } from '../../src/shared/config/config'
 import { LocalKeyEncryptionKey } from '../../src/shared/crypto/key-encryption-key'
 import { SecretBox } from '../../src/shared/crypto/secret-box'
 import { UnitOfWork } from '../../src/shared/database/unit-of-work'
@@ -25,13 +28,25 @@ class FakeCatalog implements DokployCatalog {
   gate: Promise<void> | null = null
   calls = 0
   projectOf = new Map<string, string>()
+  /** Другие ключи, которые Dokploy принимает (другой пользователь), и какие приложения видит каждый ключ */
+  otherKeys = new Set<string>()
+  visible = new Map<string, Set<string>>()
+
+  private accepts(apiKey: string) {
+    return apiKey === this.validKey || this.otherKeys.has(apiKey)
+  }
+
+  async applicationIds(_baseUrl: string, apiKey: string) {
+    if (!this.accepts(apiKey)) throw new DokployUnauthorizedError('dokploy application.search: 401 Unauthorized')
+    return new Set(this.visible.get(apiKey) ?? [])
+  }
 
   async environments(_baseUrl: string, apiKey: string) {
     this.calls++
     if (this.gate) await this.gate
     if (this.down) throw new DokployUnavailableError('dokploy project.all: 503')
     if (this.rateLimited) throw new DokployRateLimitedError('dokploy project.all: 429 Rate limit exceeded', 86_345_000)
-    if (apiKey !== this.validKey) throw new DokployUnauthorizedError('dokploy project.all: 401 Unauthorized')
+    if (!this.accepts(apiKey)) throw new DokployUnauthorizedError('dokploy project.all: 401 Unauthorized')
     return [...environments].map((environmentId) => ({
       projectId: this.projectOf.get(environmentId) ?? 'prj_1',
       environmentId,
@@ -40,7 +55,7 @@ class FakeCatalog implements DokployCatalog {
   }
 
   async servers(_baseUrl: string, apiKey: string) {
-    if (apiKey !== this.validKey) throw new DokployUnauthorizedError('dokploy server.all: 401 Unauthorized')
+    if (!this.accepts(apiKey)) throw new DokployUnauthorizedError('dokploy server.all: 401 Unauthorized')
     return [{ serverId: 'srv_1', name: 'bots-eu-1' }]
   }
 }
@@ -253,6 +268,83 @@ describe('правка назначения', () => {
     expect((await useCases.update(created.id, { version: 1, name: created.name }, 'operator:1')).version).toBe(1)
     const audit = await db.selectFrom('audit_event').select('action').where('target_id', '=', created.id).execute()
     expect(audit.map((row) => row.action)).toEqual(['destination.created'])
+  })
+})
+
+describe('назначение с роботами', () => {
+  /** Неудалённое развёртывание на назначении — прямой записью: сценарии развёртываний здесь не нужны */
+  async function liveDeployment(destinationId: string, dokployAppId: string | null): Promise<void> {
+    const customerId = Bun.randomUUIDv7()
+    await db
+      .insertInto('customer')
+      .values({
+        id: customerId,
+        name: `c-${customerId.slice(-8)}`,
+        account_id: 'acc',
+        tinvest_token_sealed: new Uint8Array([1]),
+        tinvest_token_hint: '••••abcd',
+      })
+      .execute()
+    const template = await db.selectFrom('bot_template').select(['id', 'current_version']).limit(1).executeTakeFirst()
+    if (!template) throw new Error('catalog is empty: sync it first')
+    const id = Bun.randomUUIDv7()
+    await db
+      .insertInto('bot_deployment')
+      .values({
+        id,
+        customer_id: customerId,
+        destination_id: destinationId,
+        template_id: template.id,
+        template_version: template.current_version,
+        config: '{}',
+        trading_mode: 'sandbox',
+        app_name: `by-${id.replace(/-/g, '').slice(-12)}`,
+        status: 'RUNNING',
+        dokploy_app_id: dokployAppId,
+      })
+      .execute()
+  }
+
+  beforeAll(async () => {
+    const source = new FilesystemCatalogSource(loadCatalogConfig().BOTS_CATALOG_DIR)
+    await new SyncCatalog(source, new PostgresCatalogRepository(unitOfWork), unitOfWork, new AuditLog(unitOfWork)).execute('system:test')
+  })
+
+  test('адрес, окружение и сервер не меняются, пока есть роботы; имя — можно', async () => {
+    const created = await useCases.create(input(), 'operator:1')
+    await liveDeployment(created.id, 'app-1')
+
+    expect(await codeOf(useCases.update(created.id, { version: 1, environmentId: freshEnvironment() }, 'operator:1'))).toBe(
+      DestinationErrorCode.HAS_DEPLOYMENTS,
+    )
+    expect(
+      await codeOf(
+        useCases.update(
+          created.id,
+          { version: 1, baseUrl: `https://moved-${created.id.slice(-6)}.example.com`, apiKey: catalog.validKey },
+          'operator:1',
+        ),
+      ),
+    ).toBe(DestinationErrorCode.HAS_DEPLOYMENTS)
+    const renamed = await useCases.update(created.id, { version: 1, name: `r-${created.id.slice(-6)}` }, 'operator:1')
+    expect(renamed.version).toBe(2)
+  })
+
+  test('новый ключ должен видеть приложения роботов: ключ другого пользователя Dokploy — отказ, своего — можно', async () => {
+    const created = await useCases.create(input(), 'operator:1')
+    await liveDeployment(created.id, 'app-mine')
+    const stranger = 'stranger-key-0123456789abcdef'
+    const sibling = 'sibling-key-0123456789abcdef'
+    catalog.otherKeys.add(stranger)
+    catalog.otherKeys.add(sibling)
+    catalog.visible.set(stranger, new Set(['app-someone-else']))
+    catalog.visible.set(sibling, new Set(['app-mine']))
+
+    expect(await codeOf(useCases.update(created.id, { version: 1, apiKey: stranger }, 'operator:1'))).toBe(
+      DestinationErrorCode.KEY_CANNOT_SEE_DEPLOYMENTS,
+    )
+    const rotated = await useCases.update(created.id, { version: 1, apiKey: sibling }, 'operator:1')
+    expect(rotated.apiKeyHint).toBe('••••cdef')
   })
 })
 

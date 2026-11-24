@@ -13,7 +13,7 @@ sandbox = {{ customer.sandbox }}
 
 [clients]
 [clients.tinkfoff_invest]
-address = "{{ config.apiAddress }}"
+address = "{{ platform.tinvestAddress }}"
 app_name = "botyard"
 token = "{{ secret.tinvestToken }}"
 

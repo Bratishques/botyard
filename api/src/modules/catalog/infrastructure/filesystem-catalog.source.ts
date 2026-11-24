@@ -1,11 +1,16 @@
 import { lstat, readdir, readFile, realpath } from 'node:fs/promises'
 import path from 'node:path'
 import Ajv2020, { type ValidateFunction } from 'ajv/dist/2020'
-import addFormats from 'ajv-formats'
+import { configSchemaValidator } from '../../../shared/catalog/config-validator'
+import { ROBOT_CA_ENV, ROBOT_CA_MOUNT_PATH } from '../../../shared/tinvest/tinvest'
 import { CatalogError, CatalogErrorCode, type CatalogSource, type TemplateManifest, type TemplateSource } from '../domain/catalog'
+import { checkTemplate } from './template-variables'
 
 /** Манифест как он лежит в репозитории: со служебной ссылкой на схему */
 type ManifestFile = TemplateManifest & { $schema?: string }
+
+/** Переменные окружения, которые выставляет платформа (корень сертификатов T-Invest) */
+const RESERVED_ENV = new Set([...Object.keys(ROBOT_CA_ENV), 'SSL_CERT_DIR'])
 
 /** Имя файла шаблона внутри папки шаблона: только такое, без путей и скрытых файлов */
 const TEMPLATE_FILE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/
@@ -100,21 +105,29 @@ export class FilesystemCatalogSource implements CatalogSource {
       files[name] = await readFile(filePath, 'utf8')
     }
 
+    // Шаблоны конфига: компилируются, переменные — только допустимые (template-variables.ts)
+    const templates: [string, string][] = [
+      ...Object.entries(raw.config.env ?? {}).map(([variable, value]): [string, string] => [`env ${variable}`, value]),
+      ...Object.entries(files).map(([name, content]): [string, string] => [name, content]),
+    ]
+    for (const [where, source] of templates) {
+      const problems = checkTemplate(source, raw.config.schema)
+      if (problems.length > 0) throw invalid(folder, `${where}: ${problems.join('; ')}`)
+    }
+
+    // Имена, которые платформа даёт роботу сама: шаблон не может их подменить
+    const reserved = Object.keys(raw.config.env ?? {}).filter((name) => RESERVED_ENV.has(name))
+    if (reserved.length > 0) throw invalid(folder, `config.env: ${reserved.join(', ')} is set by the platform`)
+    const platformDir = path.posix.dirname(ROBOT_CA_MOUNT_PATH)
+    const mountPath = raw.config.mountPath === undefined ? undefined : path.posix.normalize(raw.config.mountPath)
+    if (mountPath !== undefined && (mountPath === platformDir || mountPath.startsWith(`${platformDir}/`))) {
+      throw invalid(folder, `config.mountPath: ${path.posix.dirname(ROBOT_CA_MOUNT_PATH)} is used by the platform`)
+    }
+
     // Манифест хранится без служебного `$schema`: это ссылка на файл в репозитории, не часть шаблона
     const { $schema: _schema, ...manifest } = raw
     return { manifest, files }
   }
-}
-
-/**
- * Валидатор схем конфига: строгий режим и стандартные форматы (`uri`, `email`, `date-time`…) — тот же набор
- * потом проверяет конфиг развёртывания, поэтому формат из схемы не окажется «неизвестным» в одном месте и
- * рабочим в другом.
- */
-export function configSchemaValidator(): Ajv2020 {
-  const ajv = new Ajv2020({ strict: true, allErrors: true })
-  addFormats(ajv)
-  return ajv
 }
 
 /** Обычный файл или папка, не симлинк: симлинк из публичного репозитория может вести куда угодно */

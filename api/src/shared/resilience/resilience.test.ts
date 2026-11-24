@@ -124,6 +124,28 @@ describe('CircuitBreaker', () => {
     expect(breaker.status).toBe('open')
   })
 
+  test('нейтральный исход в half-open цепь не замыкает и не размыкает, а освобождает пробный слот', async () => {
+    let now = 0
+    const breaker = new CircuitBreaker({ failureThreshold: 1, openMs: 1_000, now: () => now })
+    await expect(breaker.run(fail, always)).rejects.toThrow('down')
+    now = 1_000
+    const timeout = async () => {
+      throw new Error('no answer in 30000 ms')
+    }
+
+    await expect(
+      breaker.run(
+        timeout,
+        () => false,
+        () => true,
+      ),
+    ).rejects.toThrow('no answer')
+    expect(breaker.status).toBe('half-open')
+    // Слот свободен: следующий пробный вызов проходит и решает судьбу цепи
+    expect(await breaker.run(async () => 'ok', always)).toBe('ok')
+    expect(breaker.status).toBe('closed')
+  })
+
   test('поздний отказ вызова, начатого до восстановления, цепь снова не размыкает', async () => {
     let now = 0
     const breaker = new CircuitBreaker({ failureThreshold: 1, openMs: 1_000, now: () => now })

@@ -1,0 +1,10 @@
+{
+  "message": "Service not found",
+  "code": "NOT_FOUND",
+  "data": {
+    "code": "NOT_FOUND",
+    "httpStatus": 404,
+    "path": "application.delete",
+    "zodError": null
+  }
+}

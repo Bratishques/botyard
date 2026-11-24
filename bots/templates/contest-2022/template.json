@@ -19,33 +19,65 @@
     "template": "config.toml.tpl",
     "schema": {
       "type": "object",
-      "required": ["instruments"],
+      "required": [
+        "instruments"
+      ],
       "additionalProperties": false,
       "properties": {
-        "apiAddress": { "type": "string", "default": "invest-public-api.tinkoff.ru:443", "description": "Адрес T-Invest API или симулятора" },
         "instruments": {
           "type": "array",
           "minItems": 1,
           "items": {
             "type": "object",
-            "required": ["figi"],
+            "required": [
+              "figi"
+            ],
             "additionalProperties": false,
             "properties": {
-              "figi": { "type": "string" },
-              "depth": { "type": "integer", "minimum": 1, "maximum": 50, "default": 20 },
-              "dominanceRatio": { "type": "number", "exclusiveMinimum": 1, "default": 3 },
-              "profitPercentage": { "type": "number", "exclusiveMinimum": 0, "default": 0.01 }
+              "figi": {
+                "type": "string"
+              },
+              "depth": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 50,
+                "default": 20
+              },
+              "dominanceRatio": {
+                "type": "number",
+                "exclusiveMinimum": 1,
+                "default": 3
+              },
+              "profitPercentage": {
+                "type": "number",
+                "exclusiveMinimum": 0,
+                "default": 0.01
+              }
             }
           }
         },
-        "logLevel": { "enum": ["debug", "info", "warn", "error"], "default": "info" }
+        "logLevel": {
+          "enum": [
+            "debug",
+            "info",
+            "warn",
+            "error"
+          ],
+          "default": "info"
+        }
       }
     }
   },
-  "metrics": { "port": 2112, "path": "/metrics" },
+  "security": { "verifiesTls": false },
+  "metrics": {
+    "port": 2112,
+    "path": "/metrics"
+  },
   "notes": [
     "Робот читает configs/config.toml относительно WORKDIR образа; файл приходит file mount'ом Dokploy вместе с токеном.",
     "Ключ [clients.tinkfoff_invest] с опечаткой — так в upstream, исправлять нельзя.",
-    "Последний коммит в upstream — май 2022, сборка на golang:1.18-alpine."
+    "Последний коммит в upstream — май 2022, сборка на golang:1.18-alpine.",
+    "TLS без проверки сертификата (cmd/trading-robot/main.go: InsecureSkipVerify) — только песочница, пока нет форка с проверкой.",
+    "Адрес T-Invest API задаёт платформа по режиму клиента (`platform.tinvestAddress`), а не конфиг: боевой токен не должен уходить на адрес, введённый оператором."
   ]
 }
