@@ -20,6 +20,8 @@ export interface DestinationChanges {
   readonly environmentId?: string
   readonly serverId?: string | null
   readonly status?: DestinationStatus
+  /** Сброс ошибки прошлой проверки при возврате в ACTIVE */
+  readonly lastError?: null
 }
 
 export interface CheckResult {
@@ -44,11 +46,19 @@ export interface DestinationRepository {
   insert(destination: NewDestination): Promise<Destination>
   findById(id: string): Promise<Destination | null>
   list(): Promise<Destination[]>
-  /** Правка оператора: только при совпадении версии, версия растёт */
-  update(id: string, expectedVersion: number, changes: DestinationChanges): Promise<Destination | null>
+  /**
+   * Правка оператора: только при совпадении версии, версия растёт. `unlessStatus` — не писать, если статус
+   * уже такой: повторное включение или выключение не поднимает версию.
+   */
+  update(
+    id: string,
+    expectedVersion: number,
+    changes: DestinationChanges,
+    options?: { unlessStatus?: DestinationStatus },
+  ): Promise<Destination | null>
   /**
    * Результат проверки связи: только если с момента чтения ключ и адрес не менялись (та же версия)
-   * и назначение не выключено. Версию не меняет: это не правка оператора.
+   * назначение не выключено и записанный результат не свежее этого. Версию не меняет: это не правка оператора.
    */
   recordCheck(id: string, checkedVersion: number, result: CheckResult): Promise<Destination | null>
 }

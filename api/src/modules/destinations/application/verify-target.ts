@@ -1,4 +1,5 @@
 import {
+  DokployRateLimitedError,
   DokployRejectedError,
   DokployResponseError,
   DokployUnauthorizedError,
@@ -49,14 +50,23 @@ export function toDestinationError(error: unknown): unknown {
   if (error instanceof DestinationError) return error
   if (error instanceof DokployUnauthorizedError)
     return new DestinationError(DestinationErrorCode.KEY_REJECTED, 'dokploy rejected the api key')
-  if (error instanceof DokployUnavailableError && error.retryAfterMs !== undefined && error.retryAfterMs > RATE_LIMIT_HINT_MS) {
+  if (
+    (error instanceof DokployRateLimitedError || error instanceof DokployUnavailableError) &&
+    error.retryAfterMs !== undefined &&
+    error.retryAfterMs > RATE_LIMIT_HINT_MS
+  ) {
     const hours = Math.ceil(error.retryAfterMs / 3_600_000)
     return new DestinationError(
       DestinationErrorCode.RATE_LIMITED,
       `dokploy api key is rate limited for ~${hours} h: issue a key without a rate limit (infra/dokploy/README.md)`,
     )
   }
-  if (error instanceof DokployUnavailableError || error instanceof DokployResponseError || error instanceof DokployRejectedError) {
+  if (
+    error instanceof DokployUnavailableError ||
+    error instanceof DokployRateLimitedError ||
+    error instanceof DokployResponseError ||
+    error instanceof DokployRejectedError
+  ) {
     return new DestinationError(DestinationErrorCode.UNREACHABLE, error.message)
   }
 

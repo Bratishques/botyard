@@ -30,8 +30,15 @@ export class CircuitOpenError extends Error {
 
 type State = { kind: 'closed'; failures: number } | { kind: 'open'; until: number } | { kind: 'half-open'; probing: boolean }
 
+/*
+ * Поколение состояния: вызов запоминает поколение, в котором его допустили, и его исход учитывается,
+ * только если состояние с тех пор не менялось. Поздний успех вызова, начатого до размыкания, не закроет
+ * цепь, а поздний отказ не разомкнёт её снова.
+ */
+
 export class CircuitBreaker {
   private state: State = { kind: 'closed', failures: 0 }
+  private generation = 0
   private readonly now: () => number
 
   constructor(private readonly options: BreakerOptions) {
@@ -50,22 +57,31 @@ export class CircuitBreaker {
    */
   async run<T>(call: () => Promise<T>, countsAsFailure: (error: unknown) => boolean): Promise<T> {
     this.admit()
+    const admittedIn = this.generation
     try {
       const result = await call()
-      this.state = { kind: 'closed', failures: 0 }
+      if (admittedIn === this.generation) this.transition({ kind: 'closed', failures: 0 })
       return result
     } catch (error) {
-      if (countsAsFailure(error)) this.recordFailure()
-      else if (this.state.kind === 'half-open') this.state = { kind: 'closed', failures: 0 }
+      if (admittedIn === this.generation) {
+        if (countsAsFailure(error)) this.recordFailure()
+        else if (this.state.kind === 'half-open') this.transition({ kind: 'closed', failures: 0 })
+      }
       throw error
     }
+  }
+
+  private transition(next: State): void {
+    const changed = next.kind !== this.state.kind
+    this.state = next
+    if (changed) this.generation++
   }
 
   private admit(): void {
     if (this.state.kind === 'open') {
       const left = this.state.until - this.now()
       if (left > 0) throw new CircuitOpenError(left)
-      this.state = { kind: 'half-open', probing: false }
+      this.transition({ kind: 'half-open', probing: false })
     }
     if (this.state.kind === 'half-open') {
       if (this.state.probing) throw new CircuitOpenError(0)
@@ -75,13 +91,14 @@ export class CircuitBreaker {
 
   private recordFailure(): void {
     if (this.state.kind === 'half-open') {
-      this.state = { kind: 'open', until: this.now() + this.options.openMs }
+      this.transition({ kind: 'open', until: this.now() + this.options.openMs })
       return
     }
     if (this.state.kind !== 'closed') return
 
     const failures = this.state.failures + 1
-    this.state =
-      failures >= this.options.failureThreshold ? { kind: 'open', until: this.now() + this.options.openMs } : { kind: 'closed', failures }
+    this.transition(
+      failures >= this.options.failureThreshold ? { kind: 'open', until: this.now() + this.options.openMs } : { kind: 'closed', failures },
+    )
   }
 }

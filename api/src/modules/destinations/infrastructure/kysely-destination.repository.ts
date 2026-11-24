@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common'
-import { sql } from 'kysely'
+import { type Selectable, sql } from 'kysely'
+import type { DestinationTable } from '../../../shared/database/schema'
 import { UnitOfWork } from '../../../shared/database/unit-of-work'
 import type { Destination } from '../domain/destination'
 import {
@@ -27,29 +28,17 @@ const COLUMNS = [
   'updated_at',
 ] as const
 
-type Row = {
-  id: string
-  name: string
-  base_url: string
-  api_key_sealed: Uint8Array
-  api_key_hint: string
-  project_id: string
-  environment_id: string
-  server_id: string | null
-  status: Destination['status']
-  last_checked_at: Date | null
-  last_error: string | null
-  version: number
-  created_at: Date
-  updated_at: Date
-}
+type Row = Selectable<DestinationTable>
 
 /** Ошибка уникальности Postgres → понятный конфликт; имя индекса говорит, что именно занято */
 function conflictOf(error: unknown): DestinationConflict | null {
-  const pg = error as { code?: string; constraint?: string }
-  if (pg.code !== '23505') return null
+  if (!isUniqueViolation(error)) return null
 
-  return new DestinationConflict(pg.constraint === 'destination_name_uq' ? 'name' : 'target')
+  return new DestinationConflict(error.constraint === 'destination_name_uq' ? 'name' : 'target')
+}
+
+function isUniqueViolation(error: unknown): error is { code: '23505'; constraint?: string } {
+  return typeof error === 'object' && error !== null && 'code' in error && error.code === '23505'
 }
 
 @Injectable()
@@ -92,7 +81,12 @@ export class KyselyDestinationRepository implements DestinationRepository {
     return rows.map(toDomain)
   }
 
-  async update(id: string, expectedVersion: number, changes: DestinationChanges): Promise<Destination | null> {
+  async update(
+    id: string,
+    expectedVersion: number,
+    changes: DestinationChanges,
+    options: { unlessStatus?: Destination['status'] } = {},
+  ): Promise<Destination | null> {
     try {
       const row = await this.unitOfWork
         .db()
@@ -106,11 +100,13 @@ export class KyselyDestinationRepository implements DestinationRepository {
           ...(changes.environmentId !== undefined && { environment_id: changes.environmentId }),
           ...(changes.serverId !== undefined && { server_id: changes.serverId }),
           ...(changes.status !== undefined && { status: changes.status }),
+          ...(changes.lastError === null && { last_error: null }),
           version: sql<number>`version + 1`,
           updated_at: new Date(),
         })
         .where('id', '=', id)
         .where('version', '=', expectedVersion)
+        .$if(options.unlessStatus !== undefined, (query) => query.where('status', '<>', options.unlessStatus ?? 'ACTIVE'))
         .returning(COLUMNS)
         .executeTakeFirst()
 
@@ -128,6 +124,7 @@ export class KyselyDestinationRepository implements DestinationRepository {
       .where('id', '=', id)
       .where('version', '=', checkedVersion)
       .where('status', '<>', 'DISABLED')
+      .where((eb) => eb.or([eb('last_checked_at', 'is', null), eb('last_checked_at', '<', result.checkedAt)]))
       .returning(COLUMNS)
       .executeTakeFirst()
 

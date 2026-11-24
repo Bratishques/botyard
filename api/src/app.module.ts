@@ -8,6 +8,7 @@ import type { AppConfig } from './shared/config/config'
 import { ConfigModule } from './shared/config/config.module'
 import { CryptoModule } from './shared/crypto/crypto.module'
 import { DatabaseModule } from './shared/database/database.module'
+import { DokployModule } from './shared/dokploy/dokploy.module'
 import { HttpMetricsMiddleware } from './shared/observability/http-metrics.middleware'
 import { loggerOptions } from './shared/observability/logger'
 import { MetricsServer } from './shared/observability/metrics'
@@ -23,6 +24,7 @@ export class AppModule implements NestModule {
         DatabaseModule,
         CryptoModule,
         AuditModule,
+        DokployModule,
         HealthModule,
         AuthModule,
         DestinationsModule,

@@ -1,12 +1,11 @@
 import { z } from 'zod'
 
 /**
- * Схемы ответов Dokploy — только поля, которыми пользуется Botyard; остальное отбрасывается.
+ * Схемы ответов Dokploy — только поля, которыми пользуется Botyard; остальное отбрасывается и не
+ * проверяется: новое значение в неиспользуемом поле не должно ронять разбор.
  *
- * Источник: исходники Dokploy, ветка canary, коммит b1b216e6d47dbc76e52a03d055fac98092b19fcc
- * (apps/dokploy/server/api/routers/project.ts — `all`, routers/server.ts — `all`,
- * packages/server/src/db/schema/{project,environment,server}.ts). OpenAPI Dokploy ответы не описывает,
- * а с живого инстанса они пока не записаны — см. test/fixtures/dokploy/README.md.
+ * OpenAPI Dokploy ответы не описывает. `project.all` сверен с живым Dokploy v0.31.4, `server.all` —
+ * с исходниками; происхождение каждой фикстуры — test/fixtures/dokploy/README.md.
  */
 export const dokployProjectsSchema = z.array(
   z.object({
@@ -16,7 +15,6 @@ export const dokployProjectsSchema = z.array(
       z.object({
         environmentId: z.string().min(1),
         name: z.string(),
-        isDefault: z.boolean(),
       }),
     ),
   }),
@@ -27,9 +25,6 @@ export const dokployServersSchema = z.array(
   z.object({
     serverId: z.string().min(1),
     name: z.string(),
-    ipAddress: z.string(),
-    serverStatus: z.enum(['active', 'inactive']),
-    serverType: z.enum(['deploy', 'build']),
   }),
 )
 export type DokployServer = z.infer<typeof dokployServersSchema>[number]

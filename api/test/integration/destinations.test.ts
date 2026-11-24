@@ -24,6 +24,7 @@ class FakeCatalog implements DokployCatalog {
   rateLimited = false
   gate: Promise<void> | null = null
   calls = 0
+  projectOf = new Map<string, string>()
 
   async environments(_baseUrl: string, apiKey: string) {
     this.calls++
@@ -31,7 +32,11 @@ class FakeCatalog implements DokployCatalog {
     if (this.down) throw new DokployUnavailableError('dokploy project.all: 503')
     if (this.rateLimited) throw new DokployUnavailableError('dokploy project.all: 429 Rate limit exceeded', 86_345_000)
     if (apiKey !== this.validKey) throw new DokployUnauthorizedError('dokploy project.all: 401 Unauthorized')
-    return [{ projectId: 'prj_1', environmentId: 'env_1', name: 'botyard / production' }]
+    return [...environments].map((environmentId) => ({
+      projectId: this.projectOf.get(environmentId) ?? 'prj_1',
+      environmentId,
+      name: `botyard / ${environmentId}`,
+    }))
   }
 
   async servers(_baseUrl: string, apiKey: string) {
@@ -46,11 +51,19 @@ const box = new SecretBox([new LocalKeyEncryptionKey(1, randomBytes(32))])
 let catalog: FakeCatalog
 let useCases: DestinationUseCases
 
+/** Окружения, которые «существуют» в заглушке Dokploy: у каждого тестового назначения своё */
+const environments = new Set<string>()
+function freshEnvironment(): string {
+  const id = `env_${crypto.randomUUID().slice(0, 12)}`
+  environments.add(id)
+  return id
+}
+
 const input = (overrides: Record<string, unknown> = {}) => ({
   name: `prod-${crypto.randomUUID().slice(0, 8)}`,
   baseUrl: `https://dokploy-${crypto.randomUUID().slice(0, 8)}.example.com/`,
   apiKey: 'valid-key-0123456789abcdef',
-  environmentId: 'env_1',
+  environmentId: freshEnvironment(),
   serverId: null,
   ...overrides,
 })
@@ -129,12 +142,44 @@ describe('создание назначения', () => {
     expect((rejected.reason as { code?: string }).code).toBe(DestinationErrorCode.NAME_TAKEN)
   })
 
-  test('один и тот же Dokploy в разных написаниях — TARGET_TAKEN', async () => {
-    await useCases.create(input({ baseUrl: 'https://same.example.com' }), 'operator:1')
+  test('одно окружение Dokploy под разными адресами (написания и псевдонимы) — TARGET_TAKEN, в том числе в гонке', async () => {
+    const environmentId = freshEnvironment()
+    await useCases.create(input({ baseUrl: 'https://same.example.com', environmentId }), 'operator:1')
 
-    expect(await codeOf(useCases.create(input({ baseUrl: 'https://SAME.example.com.:443/' }), 'operator:1'))).toBe(
+    expect(await codeOf(useCases.create(input({ baseUrl: 'https://SAME.example.com.:443/', environmentId }), 'operator:1'))).toBe(
       DestinationErrorCode.TARGET_TAKEN,
     )
+    expect(await codeOf(useCases.create(input({ baseUrl: 'https://203.0.113.7', environmentId }), 'operator:1'))).toBe(
+      DestinationErrorCode.TARGET_TAKEN,
+    )
+
+    const racing = freshEnvironment()
+    const results = await Promise.allSettled([
+      useCases.create(input({ environmentId: racing }), 'operator:1'),
+      useCases.create(input({ environmentId: racing }), 'operator:2'),
+    ])
+    expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(1)
+  })
+
+  test('аудит атомарен с изменением: упавшая запись аудита откатывает создание', async () => {
+    const failingAudit = new (class extends AuditLog {
+      override async record(): Promise<void> {
+        throw new Error('audit is down')
+      }
+    })(unitOfWork)
+    const withBrokenAudit = new DestinationUseCases(
+      new KyselyDestinationRepository(unitOfWork),
+      catalog,
+      config,
+      new DestinationSecrets(box),
+      unitOfWork,
+      failingAudit,
+    )
+    const name = `atomic-${crypto.randomUUID().slice(0, 8)}`
+
+    await expect(withBrokenAudit.create(input({ name }), 'operator:1')).rejects.toThrow('audit is down')
+    const leftovers = await db.selectFrom('destination').select('id').where('name', '=', name).execute()
+    expect(leftovers).toHaveLength(0)
   })
 })
 
@@ -163,6 +208,43 @@ describe('правка назначения', () => {
     const secrets = new DestinationSecrets(box)
     expect(await secrets.open(moved.id, newUrl, moved.apiKeySealed)).toBe(catalog.validKey)
     await expect(secrets.open(moved.id, created.baseUrl, moved.apiKeySealed)).rejects.toThrow()
+  })
+
+  test('правка выключенного назначения его не включает', async () => {
+    const created = await useCases.create(input(), 'operator:1')
+    const disabled = await useCases.setEnabled(created.id, 1, false, 'operator:1')
+
+    const moved = await useCases.update(created.id, { version: disabled.version, environmentId: freshEnvironment() }, 'operator:1')
+    expect(moved.status).toBe('DISABLED')
+    const rekeyed = await useCases.update(created.id, { version: moved.version, apiKey: catalog.validKey }, 'operator:1')
+    expect(rekeyed.status).toBe('DISABLED')
+  })
+
+  test('новое окружение берёт свой проект; аудит перечисляет только изменённые поля', async () => {
+    const created = await useCases.create(input(), 'operator:1')
+    const environmentId = freshEnvironment()
+    catalog.projectOf.set(environmentId, 'prj_other')
+
+    const moved = await useCases.update(created.id, { version: 1, environmentId }, 'operator:1')
+    expect(moved.projectId).toBe('prj_other')
+
+    const audit = await db
+      .selectFrom('audit_event')
+      .select('payload')
+      .where('target_id', '=', created.id)
+      .where('action', '=', 'destination.updated')
+      .executeTakeFirstOrThrow()
+    expect((audit.payload as { fields: string[] }).fields.sort()).toEqual(['environmentId', 'projectId'])
+  })
+
+  test('повторное выключение — без изменений: версия не растёт, аудита нет', async () => {
+    const created = await useCases.create(input(), 'operator:1')
+    const disabled = await useCases.setEnabled(created.id, 1, false, 'operator:1')
+    const again = await useCases.setEnabled(created.id, disabled.version, false, 'operator:2')
+
+    expect(again.version).toBe(disabled.version)
+    const audit = await db.selectFrom('audit_event').select('action').where('target_id', '=', created.id).execute()
+    expect(audit.map((row) => row.action)).toEqual(['destination.created', 'destination.disabled'])
   })
 
   test('правка без изменений не трогает версию и не пишет аудит', async () => {
@@ -197,7 +279,7 @@ describe('проверка связи', () => {
     await Bun.sleep(5)
     catalog.gate = null
     catalog.down = false
-    const renamed = await useCases.update(created.id, { version: 1, name: `renamed-${created.id.slice(-6)}` }, 'operator:2')
+    const renamed = await useCases.update(created.id, { version: 1, apiKey: catalog.validKey }, 'operator:2')
     catalog.down = true
     release()
 
@@ -205,6 +287,33 @@ describe('проверка связи', () => {
     expect(afterCheck.version).toBe(renamed.version)
     expect(afterCheck.status).toBe('ACTIVE')
     expect(afterCheck.lastError).toBeNull()
+  })
+
+  test('гонка: выключение во время проверки — результат проверки не записывается, назначение остаётся выключенным', async () => {
+    const created = await useCases.create(input(), 'operator:1')
+    let release: () => void = () => {}
+    catalog.gate = new Promise((resolve) => (release = resolve))
+
+    const checking = useCases.check(created.id, 'operator:1')
+    await Bun.sleep(5)
+    catalog.gate = null
+    await useCases.setEnabled(created.id, 1, false, 'operator:2')
+    release()
+
+    expect((await checking).status).toBe('DISABLED')
+  })
+
+  test('из двух проверок остаётся более свежая по моменту ответа Dokploy', async () => {
+    const created = await useCases.create(input(), 'operator:1')
+    const repository = new KyselyDestinationRepository(unitOfWork)
+    const newer = new Date()
+    const older = new Date(newer.getTime() - 1_000)
+
+    await repository.recordCheck(created.id, 1, { status: 'ACTIVE', error: null, checkedAt: newer })
+    const stale = await repository.recordCheck(created.id, 1, { status: 'UNREACHABLE', error: 'late', checkedAt: older })
+
+    expect(stale).toBeNull()
+    expect((await useCases.get(created.id)).status).toBe('ACTIVE')
   })
 
   test('выключенное назначение проверка не включает', async () => {

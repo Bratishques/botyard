@@ -22,17 +22,20 @@ import { CurrentOperator } from '../../auth/presentation/session.guard'
 import { DestinationUseCases } from '../application/destination-use-cases'
 import { type Destination, DestinationError, DestinationErrorCode } from '../domain/destination'
 
-const apiKey = z.string().trim().min(8).max(512)
+// Не короче 16: подсказка показывает 4 последних символа, у короткого ключа это слишком большая доля
+const apiKey = z.string().trim().min(16).max(512)
 const dokployId = z.string().trim().min(1).max(128)
 
 const previewSchema = z.object({ baseUrl: z.string().max(2048), apiKey })
-const createSchema = z.object({
-  name: z.string().max(200),
-  baseUrl: z.string().max(2048),
-  apiKey,
-  environmentId: dokployId,
-  serverId: dokployId.nullable().default(null),
-})
+const createSchema = z
+  .object({
+    name: z.string().max(200),
+    baseUrl: z.string().max(2048),
+    apiKey,
+    environmentId: dokployId,
+    serverId: dokployId.nullable().default(null),
+  })
+  .strict()
 const updateSchema = z
   .object({
     version: z.number().int().positive(),

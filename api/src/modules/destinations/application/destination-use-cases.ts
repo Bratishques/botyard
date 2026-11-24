@@ -139,7 +139,16 @@ export class DestinationUseCases {
     if (targetChanged) {
       const apiKey = input.apiKey ?? (await this.secrets.open(current.id, current.baseUrl, current.apiKeySealed))
       const { projectId } = await verifyTarget(this.catalog, { baseUrl, apiKey, environmentId, serverId })
-      Object.assign(changes, { baseUrl, projectId, environmentId, serverId, status: DestinationStatus.ACTIVE })
+      if (baseUrl !== current.baseUrl) changes.baseUrl = baseUrl
+      if (projectId !== current.projectId) changes.projectId = projectId
+      if (environmentId !== current.environmentId) changes.environmentId = environmentId
+      if (serverId !== current.serverId) changes.serverId = serverId
+      // Цель только что проверена — связь есть. Но выключение — решение оператора: правка его не снимает,
+      // включают только явным enable. Условие держит версия: статус прочитан вместе с ней
+      const staleUnreachable = current.status === DestinationStatus.UNREACHABLE || current.lastError !== null
+      if (current.status !== DestinationStatus.DISABLED && staleUnreachable) {
+        Object.assign(changes, { status: DestinationStatus.ACTIVE, lastError: null })
+      }
       if (input.apiKey !== undefined) {
         const { sealed, hint } = await this.secrets.seal(current.id, baseUrl, input.apiKey)
         Object.assign(changes, { apiKeySealed: sealed, apiKeyHint: hint })
@@ -162,11 +171,18 @@ export class DestinationUseCases {
     })
   }
 
+  /** Включение и выключение. Повтор (уже в нужном статусе) — без изменений: версия не растёт, аудита нет */
   async setEnabled(id: string, version: number, enabled: boolean, actor: string): Promise<Destination> {
     const status = enabled ? DestinationStatus.ACTIVE : DestinationStatus.DISABLED
 
     return this.unitOfWork.run(async () => {
-      const updated = (await this.repository.update(id, version, { status })) ?? (await this.conflictOrMissing(id))
+      const changed = await this.repository.update(id, version, { status, ...(enabled && { lastError: null }) }, { unlessStatus: status })
+      if (!changed) {
+        const current = await this.repository.findById(id)
+        if (current?.version === version && current.status === status) return current
+        return this.conflictOrMissing(id)
+      }
+      const updated = changed
       await this.audit.record({
         actor,
         action: enabled ? 'destination.enabled' : 'destination.disabled',
@@ -202,9 +218,11 @@ export class DestinationUseCases {
       error = `${caught.code}: ${caught.message}`
     }
 
+    // Момент наблюдения, а не записи: из двух параллельных проверок остаётся более свежая по ответу Dokploy
+    const observedAt = new Date()
     const status = error === null ? DestinationStatus.ACTIVE : DestinationStatus.UNREACHABLE
     return this.unitOfWork.run(async () => {
-      const recorded = await this.repository.recordCheck(id, current.version, { status, error, checkedAt: new Date() })
+      const recorded = await this.repository.recordCheck(id, current.version, { status, error, checkedAt: observedAt })
       if (!recorded) return this.get(id)
 
       await this.audit.record({ actor, action: 'destination.checked', targetType: 'destination', targetId: id, payload: { status, error } })

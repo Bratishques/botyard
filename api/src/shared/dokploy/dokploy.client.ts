@@ -1,7 +1,13 @@
 import type { z } from 'zod'
 import { type BreakerOptions, CircuitBreaker, CircuitOpenError, DEFAULT_BREAKER } from '../resilience/circuit-breaker'
 import { DEFAULT_RETRY, type RetryPolicy, withRetry } from '../resilience/retry'
-import { DokployRejectedError, DokployResponseError, DokployUnauthorizedError, DokployUnavailableError } from './dokploy.errors'
+import {
+  DokployRateLimitedError,
+  DokployRejectedError,
+  DokployResponseError,
+  DokployUnauthorizedError,
+  DokployUnavailableError,
+} from './dokploy.errors'
 import { type DokployProject, type DokployServer, dokployErrorSchema, dokployProjectsSchema, dokployServersSchema } from './dokploy.schemas'
 
 /** Куда и с каким ключом звать. Ключ — уже расшифрованный, живёт только на время вызова */
@@ -55,8 +61,11 @@ export class DokployClient {
       this.options.retry,
       {
         classify: (error) => ({
-          retry: error instanceof DokployUnavailableError && !(error.cause instanceof CircuitOpenError),
-          retryAfterMs: error instanceof DokployUnavailableError ? error.retryAfterMs : undefined,
+          retry:
+            (error instanceof DokployUnavailableError && !(error.cause instanceof CircuitOpenError)) ||
+            error instanceof DokployRateLimitedError,
+          retryAfterMs:
+            error instanceof DokployUnavailableError || error instanceof DokployRateLimitedError ? error.retryAfterMs : undefined,
         }),
         random: this.options.random,
         signal,
@@ -92,18 +101,30 @@ export class DokployClient {
     return parsed.data
   }
 
+  /**
+   * Цепь на адрес. Карта ограничена: предпросмотр принимает любой адрес, и без предела она росла бы
+   * с каждым опечатанным URL. Вытесняется самый давно использованный адрес.
+   */
   private breakerFor(baseUrl: string): CircuitBreaker {
     let breaker = this.breakers.get(baseUrl)
-    if (!breaker) {
+    if (breaker) {
+      this.breakers.delete(baseUrl)
+    } else {
       breaker = new CircuitBreaker(this.options.breaker)
-      this.breakers.set(baseUrl, breaker)
+      if (this.breakers.size >= MAX_BREAKERS) {
+        const oldest = this.breakers.keys().next().value
+        if (oldest !== undefined) this.breakers.delete(oldest)
+      }
     }
+    this.breakers.set(baseUrl, breaker)
 
     return breaker
   }
 }
 
-/** Отказ адресата — недоступность и непонятный ответ. Неверный ключ и отклонённый запрос — не его отказ */
+const MAX_BREAKERS = 256
+
+/** Отказ адресата — недоступность и непонятный ответ. Неверный ключ, лимит ключа и отклонённый запрос — не его отказ */
 function isTargetFailure(error: unknown): boolean {
   return error instanceof DokployUnavailableError || error instanceof DokployResponseError
 }
@@ -123,7 +144,7 @@ async function failure(method: string, response: Response): Promise<Error> {
   const message = `dokploy ${method}: ${response.status}${body.success && body.data.message ? ` ${body.data.message}` : ''}`
 
   if (response.status === 401 || response.status === 403) return new DokployUnauthorizedError(message)
-  if (response.status === 429) return new DokployUnavailableError(message, retryAfterMs(response.headers.get('retry-after')))
+  if (response.status === 429) return new DokployRateLimitedError(message, retryAfterMs(response.headers.get('retry-after')))
   if (response.status >= 500) return new DokployUnavailableError(message)
 
   return new DokployRejectedError(response.status, message)

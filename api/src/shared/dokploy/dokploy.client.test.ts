@@ -4,7 +4,13 @@ import rateLimitedFixture from '../../../test/fixtures/dokploy/rate-limited.json
 import serversFixture from '../../../test/fixtures/dokploy/server.all.json'
 import unauthorizedFixture from '../../../test/fixtures/dokploy/unauthorized.json'
 import { DokployClient, retryAfterMs } from './dokploy.client'
-import { DokployRejectedError, DokployResponseError, DokployUnauthorizedError, DokployUnavailableError } from './dokploy.errors'
+import {
+  DokployRateLimitedError,
+  DokployRejectedError,
+  DokployResponseError,
+  DokployUnauthorizedError,
+  DokployUnavailableError,
+} from './dokploy.errors'
 
 /**
  * Заглушка Dokploy на Bun.serve: настоящий HTTP, настоящие таймауты и заголовки. Сценарий ответа
@@ -63,7 +69,7 @@ describe('DokployClient', () => {
       projectsFixture.map((project) => ({
         projectId: project.projectId,
         name: project.name,
-        environments: project.environments.map(({ environmentId, name, isDefault }) => ({ environmentId, name, isDefault })),
+        environments: project.environments.map(({ environmentId, name }) => ({ environmentId, name })),
       })),
     )
     expect(projects[0]?.environments.map((environment) => environment.name).sort()).toEqual(['production', 'staging'])
@@ -72,9 +78,7 @@ describe('DokployClient', () => {
   test('разбирает server.all', async () => {
     script('server.all', { status: 200, body: serversFixture })
 
-    expect(await client().listServers(target())).toEqual([
-      { serverId: 'srv_1', name: 'bots-eu-1', ipAddress: '203.0.113.10', serverStatus: 'active', serverType: 'deploy' },
-    ])
+    expect(await client().listServers(target())).toEqual([{ serverId: 'srv_1', name: 'bots-eu-1' }])
   })
 
   test('ключ уходит только заголовком x-api-key, не в URL и не в текст ошибки', async () => {
@@ -117,8 +121,8 @@ describe('DokployClient', () => {
       .listProjects(target())
       .catch((caught: unknown) => caught)
 
-    expect(error).toBeInstanceOf(DokployUnavailableError)
-    expect((error as DokployUnavailableError).retryAfterMs).toBe(0)
+    expect(error).toBeInstanceOf(DokployRateLimitedError)
+    expect((error as DokployRateLimitedError).retryAfterMs).toBe(0)
     expect(seen).toHaveLength(3)
   })
 
@@ -129,8 +133,8 @@ describe('DokployClient', () => {
       .listProjects(target())
       .catch((caught: unknown) => caught)
 
-    expect(error).toBeInstanceOf(DokployUnavailableError)
-    expect((error as DokployUnavailableError).retryAfterMs).toBe(86_345_000)
+    expect(error).toBeInstanceOf(DokployRateLimitedError)
+    expect((error as DokployRateLimitedError).retryAfterMs).toBe(86_345_000)
     expect(String((error as Error).message)).toContain('Rate limit exceeded')
     expect(seen).toHaveLength(1)
   })
@@ -170,6 +174,18 @@ describe('DokployClient', () => {
     script('project.all', { status: 200, body: projectsFixture })
     const otherAddress = { baseUrl: `http://localhost:${server.port}`, apiKey: 'other' }
     expect(await shared.listProjects(otherAddress)).toHaveLength(1)
+  })
+
+  test('исчерпанный лимит одного ключа не размыкает цепь для другого ключа на том же адресе', async () => {
+    const shared = client({ retry: { attempts: 1, baseDelayMs: 1, maxDelayMs: 1 }, breaker: { failureThreshold: 2, openMs: 60_000 } })
+    script(
+      'project.all',
+      ...Array.from({ length: 5 }, () => ({ status: 429, body: rateLimitedFixture, headers: { 'retry-after': '86345' } })),
+    )
+    for (let i = 0; i < 5; i++) await shared.listProjects(target()).catch(() => undefined)
+
+    script('project.all', { status: 200, body: projectsFixture })
+    expect(await shared.listProjects({ baseUrl, apiKey: 'healthy-key' })).toHaveLength(1)
   })
 
   test('неверный ключ цепь не размыкает', async () => {

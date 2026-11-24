@@ -124,6 +124,18 @@ describe('CircuitBreaker', () => {
     expect(breaker.status).toBe('open')
   })
 
+  test('поздний успех вызова, начатого до размыкания, цепь не закрывает', async () => {
+    const breaker = new CircuitBreaker({ failureThreshold: 1, openMs: 60_000, now: () => 0 })
+    let release: () => void = () => {}
+    const slow = breaker.run(() => new Promise<string>((resolve) => (release = () => resolve('late'))), always)
+
+    await expect(breaker.run(fail, always)).rejects.toThrow('down')
+    expect(breaker.status).toBe('open')
+    release()
+    expect(await slow).toBe('late')
+    expect(breaker.status).toBe('open')
+  })
+
   test('ошибка вызывающего (неверный ключ) цепь не размыкает', async () => {
     const breaker = new CircuitBreaker({ failureThreshold: 1, openMs: 1_000, now: () => 0 })
 

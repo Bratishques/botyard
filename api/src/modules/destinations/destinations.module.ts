@@ -1,5 +1,4 @@
 import { Module } from '@nestjs/common'
-import { DEFAULT_DOKPLOY_CLIENT, DokployClient } from '../../shared/dokploy/dokploy.client'
 import { DestinationSecrets } from './application/destination-secrets'
 import { DestinationUseCases } from './application/destination-use-cases'
 import { DESTINATION_REPOSITORY, DOKPLOY_CATALOG } from './domain/ports'
@@ -10,7 +9,6 @@ import { DestinationsController } from './presentation/destinations.controller'
 @Module({
   controllers: [DestinationsController],
   providers: [
-    { provide: DokployClient, useFactory: () => new DokployClient(DEFAULT_DOKPLOY_CLIENT) },
     { provide: DESTINATION_REPOSITORY, useClass: KyselyDestinationRepository },
     { provide: DOKPLOY_CATALOG, useClass: DokployCatalogAdapter },
     DestinationSecrets,
