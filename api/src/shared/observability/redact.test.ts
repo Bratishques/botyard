@@ -80,6 +80,13 @@ describe('redactString', () => {
     expect(text).toContain('postgres://[redacted]@db:5432/x')
   })
 
+  test('регистр схемы и @ в пароле не мешают маске', () => {
+    const text = redactString('auth: bearer lowSECRET, Token tokSECRET, url postgres://u:p@ssSECRET@db/x')
+
+    expect(text).not.toMatch(/lowSECRET|tokSECRET|ssSECRET/)
+    expect(text).toContain('postgres://[redacted]@db/x')
+  })
+
   test('не трогает обычный текст', () => {
     expect(redactString('deployment t.1 started at https://dokploy.example.com/app')).toBe(
       'deployment t.1 started at https://dokploy.example.com/app',
@@ -105,12 +112,26 @@ describe('isSecretKey', () => {
     'DATABASE_URL',
     'sessionId',
     'jwt',
+    'tokenValue',
+    'apiKeyPlain',
+    'privateKeyPem',
+    'secretData',
   ])('%s — секрет', (key) => expect(isSecretKey(key)).toBe(true))
 
-  test.each(['name', 'tokenCount', 'idempotency-key', 'keyboard', 'apiKeyHint', 'status', 'SECRETS_MASTER_KEY_ID', 'passage', 'author'])(
-    '%s — не секрет',
-    (key) => expect(isSecretKey(key)).toBe(false),
-  )
+  test.each([
+    'name',
+    'tokenCount',
+    'idempotency-key',
+    'keyboard',
+    'apiKeyHint',
+    'status',
+    'SECRETS_MASTER_KEY_ID',
+    'passage',
+    'author',
+    'is_secret',
+    'max_tokens',
+    'hasToken',
+  ])('%s — не секрет', (key) => expect(isSecretKey(key)).toBe(false))
 })
 
 describe('pathOnly', () => {

@@ -1,8 +1,7 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { Params } from 'nestjs-pino'
-import { stdSerializers } from 'pino'
 import type { AppConfig } from '../config/config'
-import { pathOnly, redactDeep } from './redact'
+import { isSecretKey, pathOnly, REDACTED, redactDeep, redactString } from './redact'
 
 interface RequestLike {
   id?: unknown
@@ -35,14 +34,17 @@ export function loggerOptions(config: AppConfig): Params {
             remoteAddress: request.remoteAddress,
           }),
         res: (response: { statusCode?: number }) => ({ statusCode: response.statusCode }),
-        // pino-http передаёт сюда уже сериализованную ошибку, а pino — сырую. Результат стандартного
-        // сериализатора — объект со своим прототипом: поля копируются в простой, чтобы маска их обошла
-        err: (error: unknown) => redactDeep({ ...(error instanceof Error ? stdSerializers.err(error) : (error as object)) }),
+        err: serializeError,
+        // Текст сообщения тоже маскируется: Nest пишет в msg сообщение ошибки как есть
+        msg: (message: unknown) => (typeof message === 'string' ? redactString(message) : message),
       },
       formatters: {
         log: (object: Record<string, unknown>) => {
           const result: Record<string, unknown> = {}
-          for (const [key, value] of Object.entries(object)) result[key] = SERIALIZED_KEYS.has(key) ? value : redactDeep(value)
+          for (const [key, value] of Object.entries(object)) {
+            if (SERIALIZED_KEYS.has(key)) result[key] = value
+            else result[key] = isSecretKey(key) && value !== undefined && value !== null ? REDACTED : redactDeep(value)
+          }
 
           return result
         },
@@ -56,9 +58,24 @@ export function loggerOptions(config: AppConfig): Params {
 
         return isProbe(request.url) ? 'silent' : 'info'
       },
+      // Отказ пробы описывает warn самой проверки, стек синтетической ошибки 503 каждые несколько секунд не нужен
+      customErrorObject: (request: IncomingMessage, _response: ServerResponse, _error: Error, value: Record<string, unknown>) =>
+        isProbe(request.url) ? { ...value, err: undefined } : value,
       transport: config.LOG_PRETTY ? { target: 'pino-pretty', options: { singleLine: true } } : undefined,
     },
   }
+}
+
+/**
+ * pino-http передаёт сюда уже сериализованную ошибку (исходная — в неперечисляемом `raw`), pino — сырую.
+ * Маска обходит исходную ошибку: так сохраняются тип, `cause`, вложенные ошибки и свои поля.
+ */
+function serializeError(error: unknown): unknown {
+  const raw = error instanceof Error ? error : (error as { raw?: unknown } | null)?.raw
+  if (raw instanceof Error) return redactDeep(raw)
+  if (typeof error === 'string') return redactString(error)
+
+  return redactDeep(error)
 }
 
 function isProbe(url: string | undefined): boolean {

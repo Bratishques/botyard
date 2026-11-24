@@ -13,14 +13,20 @@ const SECRET_WORD =
 // Хвост camelCase-имени: tinvestToken, dokployApiKeys, connectionString
 const CAMEL_SECRET =
   /(password|passphrase|secrets?|tokens?|signature|apikeys?|privatekey|masterkey|secretkey|accesskey|credentials?|sessionid|connectionstring|databaseurl)$/i
+// Голова camelCase-имени: tokenValue, apiKeyPlain, privateKeyPem, secretData
+const CAMEL_HEAD = /^(tokens?|apiKeys?|secrets?|privateKey|password|passphrase|credentials?)[A-Z]/
 // Служебные поля рядом с секретами — не секреты: SECRETS_MASTER_KEY_ID, api_key_hint, apiKeyHint, tokenCount
 const NOT_SECRET_SNAKE = /[-_](id|hint|count|type|version|length|valid|at)$/i
 const NOT_SECRET_CAMEL = /[a-z](Id|Hint|Count|Type|Version|Length|Valid|At)$/
+// Флаги и лимиты: is_secret, hasToken, max_tokens
+const NOT_SECRET_PREFIX = /^(is|has|max|min|num)([-_]|[A-Z])/
 
 /** Значения, которые выглядят как секрет, где бы они ни лежали */
 const SECRET_VALUES: readonly [RegExp, string][] = [
-  [/\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]+/g, '$1 [redacted]'],
-  [/(\b[a-z][a-z0-9+.-]*:\/\/)[^\s/@:]+(:[^\s/@]*)?@/gi, '$1[redacted]@'],
+  // Схема авторизации HTTP регистронезависима
+  [/\b(Bearer|Basic|Token)\s+[A-Za-z0-9._~+/=-]+/gi, '$1 [redacted]'],
+  // Учётные данные в URL до последнего `@` в authority: пароль с неэкранированной `@` не утекает хвостом
+  [/(\b[a-z][a-z0-9+.-]*:\/\/)[^\s/?#]*@/gi, '$1[redacted]@'],
   [/\bt\.[A-Za-z0-9_-]{20,}/g, 't.[redacted]'],
 ]
 
@@ -30,9 +36,9 @@ const MAX_DEPTH = 8
 export function isSecretKey(key: string): boolean {
   // Идентификатор сессии — сам по себе пропуск, хоть и кончается на id
   if (/session[-_]?id$/i.test(key)) return true
-  if (NOT_SECRET_SNAKE.test(key) || NOT_SECRET_CAMEL.test(key)) return false
+  if (NOT_SECRET_SNAKE.test(key) || NOT_SECRET_CAMEL.test(key) || NOT_SECRET_PREFIX.test(key)) return false
 
-  return SECRET_WORD.test(key) || CAMEL_SECRET.test(key)
+  return SECRET_WORD.test(key) || CAMEL_SECRET.test(key) || CAMEL_HEAD.test(key)
 }
 
 export function redactString(value: string): string {

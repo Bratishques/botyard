@@ -20,15 +20,15 @@ export async function up(db: Kysely<unknown>): Promise<void> {
       -- Нормализованный адрес: схема и хост в нижнем регистре, без точки в конце хоста,
       -- без порта по умолчанию и без косой черты в конце — иначе один Dokploy заводится дважды
       base_url        text NOT NULL CHECK (
-        base_url ~ '^https?://[a-z0-9-]+([.][a-z0-9-]+)*(:[0-9]+)?(/[^?#]*[^/?#])?$'
+        base_url ~ '^https?://[a-z0-9-]+([.][a-z0-9-]+)*(:[1-9][0-9]{0,4})?(/[^?#]*[^/?#])?$'
         AND base_url !~ '^https://[^/]+:443(/|$)'
         AND base_url !~ '^http://[^/]+:80(/|$)'
       ),
       api_key_sealed  bytea NOT NULL CHECK (octet_length(api_key_sealed) > 0),
-      api_key_hint    text NOT NULL CHECK (btrim(api_key_hint) <> ''),
-      project_id      text NOT NULL CHECK (btrim(project_id) <> ''),
-      environment_id  text NOT NULL CHECK (btrim(environment_id) <> ''),
-      server_id       text CHECK (server_id IS NULL OR btrim(server_id) <> ''),
+      api_key_hint    text NOT NULL CHECK (api_key_hint !~ '^[[:space:]]*$'),
+      project_id      text NOT NULL CHECK (project_id !~ '^[[:space:]]*$'),
+      environment_id  text NOT NULL CHECK (environment_id !~ '^[[:space:]]*$'),
+      server_id       text CHECK (server_id IS NULL OR server_id !~ '^[[:space:]]*$'),
       status          text NOT NULL DEFAULT 'ACTIVE' CHECK (status IN ('ACTIVE', 'UNREACHABLE', 'DISABLED')),
       last_checked_at timestamptz,
       last_error      text,
@@ -48,9 +48,9 @@ export async function up(db: Kysely<unknown>): Promise<void> {
   await sql`
     CREATE TABLE audit_event (
       id          uuid PRIMARY KEY,
-      actor       text NOT NULL CHECK (btrim(actor) <> ''),
-      action      text NOT NULL CHECK (btrim(action) <> ''),
-      target_type text NOT NULL CHECK (btrim(target_type) <> ''),
+      actor       text NOT NULL CHECK (actor !~ '^[[:space:]]*$'),
+      action      text NOT NULL CHECK (action !~ '^[[:space:]]*$'),
+      target_type text NOT NULL CHECK (target_type !~ '^[[:space:]]*$'),
       target_id   text,
       payload     jsonb NOT NULL DEFAULT '{}'::jsonb CHECK (jsonb_typeof(payload) = 'object'),
       created_at  timestamptz NOT NULL DEFAULT now()

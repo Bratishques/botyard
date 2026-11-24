@@ -43,6 +43,8 @@ describe('SecretBox', () => {
     const aad = first.header.subarray(0, 2)
 
     expect(first.iv.equals(second.iv)).toBe(false)
+    // iv обёртки под долгоживущим мастер-ключом тоже не повторяется
+    expect(first.wrapped.subarray(0, 12).equals(second.wrapped.subarray(0, 12))).toBe(false)
     expect(Buffer.from(await key.unwrap(first.wrapped, aad)).equals(Buffer.from(await key.unwrap(second.wrapped, aad)))).toBe(false)
   })
 
@@ -74,6 +76,11 @@ describe('SecretBox', () => {
     await expect(key.unwrap(broken, header.subarray(0, 2))).rejects.toThrow()
     await expect(key.unwrap(wrapped, Buffer.from([1, 9]))).rejects.toThrow()
     expect(wrapped.length).toBe(LOCAL_WRAPPED_BYTES)
+    for (const length of [28, LOCAL_WRAPPED_BYTES - 1, LOCAL_WRAPPED_BYTES + 1]) {
+      await expect(key.unwrap(Buffer.concat([wrapped, Buffer.alloc(1)]).subarray(0, length), header.subarray(0, 2))).rejects.toThrow(
+        'wrapped data key has wrong length',
+      )
+    }
   })
 
   test('испорченный байт в любом месте конверта — отказ', async () => {
@@ -146,6 +153,7 @@ describe('secretHint', () => {
   })
 
   test('короткий секрет не раскрывает вовсе', () => {
+    expect(secretHint('')).toBe('••••')
     expect(secretHint('abcdefghi')).toBe('••••')
     expect(secretHint('abcdefghijklmno')).toBe('••••')
   })

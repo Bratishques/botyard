@@ -29,12 +29,18 @@ beforeAll(async () => {
     logger(request, response)
     if (request.url?.startsWith('/boom')) {
       response.statusCode = 500
-      response.err = Object.assign(new Error('dokploy said no to postgres://user:ERRPASS@db/x'), { config: { apiKey: 'ERRKEY' } })
+      const cause = Object.assign(new Error('socket hang up'), { headers: { 'x-api-key': 'CAUSEKEY' } })
+      response.err = Object.assign(new Error('dokploy said no to postgres://user:ERRPASS@db/x', { cause }), {
+        config: { apiKey: 'ERRKEY' },
+      })
       response.end()
       return
     }
-    if (request.url?.startsWith('/webhooks/'))
+    if (request.url?.startsWith('/webhooks/')) {
       request.log.info({ destination: { credentials: { apiKey: 'DEEPSECRET' } } }, 'calling dokploy')
+      request.log.info({ apiKey: 'TOPKEY', password: 'TOPPASS', tokenValue: 'TOPTOKEN' }, 'top level fields')
+      request.log.warn('dokploy failed for postgres://u:MSGPASS@db/x with bearer MSGBEARER')
+    }
     response.statusCode = request.url?.startsWith('/health/') ? 200 : 202
     response.end()
   })
@@ -66,21 +72,23 @@ describe('логи запросов через pino-http', () => {
     const completed = records.find((record) => record.msg === 'request completed') as { res: { statusCode: number } }
 
     expect(completed.res.statusCode).toBe(202)
-    expect(text).not.toMatch(/QUERYSECRET|SIGSECRET|AUTHSECRET|DEEPSECRET/)
+    expect(text).not.toMatch(/QUERYSECRET|SIGSECRET|AUTHSECRET|DEEPSECRET|TOPKEY|TOPPASS|TOPTOKEN|MSGPASS|MSGBEARER/)
+    expect(text).toContain('dokploy failed for postgres://[redacted]@db/x')
     expect(text).toContain('k-1')
   })
 
   test('ошибка запроса видна в логе, её секреты замаскированы', async () => {
     const records = await call('/boom')
     const errored = records.find((record) => record.msg === 'request errored') as {
-      err: { type: string; message: string }
+      err: { type: string; message: string; cause: { message: string } }
       res: { statusCode: number }
     }
 
     expect(errored.res.statusCode).toBe(500)
     expect(errored.err.type).toBe('Error')
     expect(errored.err.message).toContain('dokploy said no')
-    expect(JSON.stringify(records)).not.toMatch(/ERRPASS|ERRKEY/)
+    expect(errored.err.cause.message).toBe('socket hang up')
+    expect(JSON.stringify(records)).not.toMatch(/ERRPASS|ERRKEY|CAUSEKEY/)
   })
 
   test('успешная проба не пишется', async () => {

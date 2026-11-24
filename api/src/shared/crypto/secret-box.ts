@@ -9,9 +9,9 @@ import { DATA_KEY_BYTES, type KeyEncryptionKey } from './key-encryption-key'
  *
  * Формат v1, всё в одном bytea:
  *
- *   [1] версия формата = 1     ┐
- *   [1] id мастер-ключа         ├ заголовок, входит в AAD обоих слоёв
- *   [2] длина обёрнутого DEK    ┘ (big-endian)
+ *   [1] версия формата = 1     ┐ входят в AAD обоих слоёв
+ *   [1] id мастер-ключа         ┘
+ *   [2] длина обёрнутого DEK, big-endian — входит в AAD шифртекста секрета
  *   [n] обёрнутый DEK
  *   [12] iv  [16] tag  [..] шифртекст секрета
  *
@@ -98,9 +98,12 @@ export class SecretBoxError extends Error {
   override readonly name = 'SecretBoxError'
 }
 
-/** Контекст секрета: строится только через `secretContext`, свободная строка не принимается */
+declare const secretContextBrand: unique symbol
+
+/** Контекст секрета: строится только через `secretContext`, литерал `{ value }` не пройдёт проверку типов */
 export interface SecretContext {
   readonly value: string
+  readonly [secretContextBrand]: true
 }
 
 const CONTEXT_PART = /^[A-Za-z0-9._:/@-]+$/
@@ -115,18 +118,19 @@ export function secretContext(entity: string, id: string, field: string, ...bind
     if (!CONTEXT_PART.test(part)) throw new Error(`invalid secret context part: ${JSON.stringify(part.slice(0, 40))}`)
   }
 
-  return { value: [entity, id, field, ...bindings].join('|') }
+  return { value: [entity, id, field, ...bindings].join('|') } as SecretContext
 }
 
 /**
  * Подсказка для оператора: последние символы, по которым он узнает ключ в списке. Для короткого
  * секрета хвост — слишком большая его доля, поэтому подсказки нет.
  */
-export function secretHint(secret: string, visible = 4): string {
-  return secret.length < MIN_HINTED_LENGTH ? '••••' : `••••${secret.slice(-visible)}`
+export function secretHint(secret: string): string {
+  return secret.length < MIN_HINTED_LENGTH ? '••••' : `••••${secret.slice(-HINT_VISIBLE)}`
 }
 
 const MIN_HINTED_LENGTH = 16
+const HINT_VISIBLE = 4
 const FORMAT_V1 = 1
 const HEADER_BYTES = 4
 const IV_BYTES = 12
