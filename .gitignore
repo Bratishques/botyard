@@ -8,3 +8,6 @@ coverage/
 .DS_Store
 .idea/
 .vscode/
+
+# локальный симлинк на общие навыки из ../api, вне рабочей области битый
+.claude/skills
