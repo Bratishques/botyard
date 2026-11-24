@@ -21,6 +21,16 @@ export type ClaimRefusal =
   /** Шаг выполняет другой воркер; аренда кончится в `until` */
   | { readonly reason: 'leased'; readonly until: Date }
 
+/** Незавершённая операция без аренды и без движения дольше порога: её команда, вероятно, потерялась */
+export interface StalledOperation {
+  readonly operationId: string
+  readonly deploymentId: string
+  readonly kind: ClaimedStep['kind']
+  readonly step: SagaStep
+  /** Сколько раз reconciler уже будил её на этом шаге без прогресса */
+  readonly kicks: number
+}
+
 /** Итог операции для развёртывания */
 export interface Finish {
   readonly operation: 'SUCCEEDED' | 'FAILED'
@@ -55,6 +65,15 @@ export interface OperationStore {
    * сняв захват `active_operation_id`
    */
   finish(claimed: ClaimedStep, finish: Finish): Promise<boolean>
+  /** Застрявшие операции: не завершены, аренды нет или истекла, `updated_at` старше `idleMs` */
+  stalled(idleMs: number, limit: number): Promise<StalledOperation[]>
+  /**
+   * Разбудить: новая метка пробуждения `wake` (старая команда, если доедет, устареет), счётчик пинков +1,
+   * `updated_at` — сейчас. Условно: тот же шаг, всё ещё застряла, пинков столько же, сколько прочитано
+   */
+  kick(stalled: StalledOperation, wake: string, idleMs: number): Promise<boolean>
+  /** Сдаться: операция FAILED, итог в развёртывание (только если активная — она) — при тех же условиях */
+  abandon(stalled: StalledOperation, finish: Finish, idleMs: number): Promise<boolean>
 }
 
 export const OPERATION_STORE = Symbol('OPERATION_STORE')

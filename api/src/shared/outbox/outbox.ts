@@ -36,6 +36,22 @@ export class Outbox {
 
     return id
   }
+
+  /**
+   * Удалить опубликованные сообщения старше `olderThanMs`, не больше `limit` за раз: порция короткая и не держит
+   * блокировок. Неопубликованные не трогаются никогда. Возвращает число удалённых
+   */
+  async purgePublished(olderThanMs: number, limit: number): Promise<number> {
+    const result = await sql`
+      DELETE FROM outbox_message WHERE id IN (
+        SELECT id FROM outbox_message
+        WHERE published_at IS NOT NULL AND published_at < now() - make_interval(secs => ${olderThanMs / 1000})
+        LIMIT ${limit}
+      )
+    `.execute(this.unitOfWork.db())
+
+    return Number(result.numAffectedRows ?? 0)
+  }
 }
 
 @Global()

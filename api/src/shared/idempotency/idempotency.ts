@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto'
 import { Global, Injectable, Module } from '@nestjs/common'
+import { sql } from 'kysely'
 import { UnitOfWork } from '../database/unit-of-work'
 import { canonicalJson } from '../json/canonical-json'
 
@@ -7,6 +8,9 @@ import { canonicalJson } from '../json/canonical-json'
 export { IDEMPOTENCY_KEY } from '@botyard/contract'
 
 /** Коды ответа API про сам ключ, а не про действие */
+/** Сколько помнится ключ: повтор после обрыва приходит за секунды, сутки — с большим запасом */
+export const IDEMPOTENCY_TTL_MS = 24 * 60 * 60_000
+
 export const IdempotencyErrorCode = {
   KEY_REQUIRED: 'IDEMPOTENCY_KEY_REQUIRED',
   CONFLICT: 'IDEMPOTENCY_CONFLICT',
@@ -36,7 +40,7 @@ export interface IdempotentResult {
  *
  * Сохраняется только успешный ответ: ошибка откатывает транзакцию вместе с ключом, и повтор с тем же
  * ключом выполняется заново (например, 409 «идёт другая операция» после её завершения станет 202).
- * Записи пока не удаляются: очистка по `created_at` — в docs/roadmap.md.
+ * Записи живут `IDEMPOTENCY_TTL_MS` (сутки): старше — удаляет reconciler, и тот же ключ дальше — новый запрос.
  */
 @Injectable()
 export class Idempotency {
@@ -83,6 +87,19 @@ export class Idempotency {
 
       return { ...result, replayed: false }
     })
+  }
+
+  /** Удалить ключи старше `olderThanMs`, не больше `limit` за раз. Возвращает число удалённых */
+  async purgeExpired(olderThanMs: number, limit: number): Promise<number> {
+    const result = await sql`
+      DELETE FROM idempotency_record WHERE (scope, key) IN (
+        SELECT scope, key FROM idempotency_record
+        WHERE created_at < now() - make_interval(secs => ${olderThanMs / 1000})
+        LIMIT ${limit}
+      )
+    `.execute(this.unitOfWork.db())
+
+    return Number(result.numAffectedRows ?? 0)
   }
 }
 

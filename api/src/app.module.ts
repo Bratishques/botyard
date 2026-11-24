@@ -12,6 +12,7 @@ import { ConfigModule } from './shared/config/config.module'
 import { CryptoModule } from './shared/crypto/crypto.module'
 import { DatabaseModule } from './shared/database/database.module'
 import { DokployModule } from './shared/dokploy/dokploy.module'
+import { HousekeepingModule } from './shared/housekeeping/housekeeping'
 import { IdempotencyModule } from './shared/idempotency/idempotency'
 import { HttpMetricsMiddleware } from './shared/observability/http-metrics.middleware'
 import { loggerOptions } from './shared/observability/logger'
@@ -32,6 +33,7 @@ export class AppModule implements NestModule {
         DokployModule,
         OutboxModule,
         IdempotencyModule,
+        HousekeepingModule,
         HealthModule,
         AuthModule,
         DestinationsModule,

@@ -7,6 +7,7 @@ import { PostgresCatalogRepository } from '../../src/modules/catalog/infrastruct
 import { CustomerUseCases } from '../../src/modules/customers/application/customer-use-cases'
 import { PostgresCustomerRepository } from '../../src/modules/customers/infrastructure/postgres-customer.repository'
 import { DeploymentUseCases } from '../../src/modules/deployments/application/deployment-use-cases'
+import { OperationReconciler } from '../../src/modules/deployments/application/operation-reconciler'
 import { OperationWorker, type StepMessage } from '../../src/modules/deployments/application/operation-worker'
 import {
   type AppSpec,
@@ -662,5 +663,88 @@ describe('воркер саги: гонки и повторная доставк
 
     expect(platform.calls.length).toBe(calls)
     expect(await pending(operation.id)).toEqual([])
+  })
+})
+
+describe('reconciler застрявших операций', () => {
+  const reconciler = new OperationReconciler(store, unitOfWork, outbox, audit)
+  /** Команда потеряна: сообщения в outbox нет, операция без движения дольше порога */
+  async function loseCommand(operationId: string, minutesAgo = 11) {
+    await db.deleteFrom('outbox_message').where(sql<boolean>`payload->>'operationId' = ${operationId}`).execute()
+    await sql`UPDATE operation SET updated_at = now() - make_interval(mins => ${minutesAgo}) WHERE id = ${operationId}`.execute(db)
+  }
+
+  test('потерянная команда: пинок с новой меткой — операция доходит до конца, старая команда устарела', async () => {
+    const platform = new FakePlatform()
+    const { deployment, operation } = await provision()
+    const original: StepMessage = { operationId: operation.id, deploymentId: deployment.id, kind: 'PROVISION', step: 'ensure_app' }
+    await loseCommand(operation.id)
+
+    const result = await reconciler.tick()
+    expect(result.kicked).toBeGreaterThanOrEqual(1)
+    const [command] = await pending(operation.id)
+    expect(command?.message).toMatchObject({ step: 'ensure_app', wake: expect.any(String) })
+
+    await workerWith(platform).handle(original) // старая команда всё-таки доехала
+    expect(platform.calls).toEqual([])
+    await drive(workerWith(platform), operation.id)
+    expect((await state(deployment.id, operation.id)).deployment.status).toBe('RUNNING')
+    const context = await db.selectFrom('operation').select('context').where('id', '=', operation.id).executeTakeFirstOrThrow()
+    expect(context.context).not.toHaveProperty('kicks')
+  })
+
+  test('операцию с живой арендой или недавним движением не трогает', async () => {
+    const busy = await provision()
+    await loseCommand(busy.operation.id)
+    await sql`UPDATE operation SET status = 'RUNNING', lease_until = now() + interval '1 minute' WHERE id = ${busy.operation.id}`.execute(
+      db,
+    )
+    const fresh = await provision()
+    await loseCommand(fresh.operation.id, 1)
+
+    await reconciler.tick()
+
+    expect(await pending(busy.operation.id)).toEqual([])
+    expect(await pending(fresh.operation.id)).toEqual([])
+  })
+
+  test('после трёх пинков без прогресса — FAILED с причиной, захват снят, аудит от reconciler', async () => {
+    const { deployment, operation } = await provision()
+    await loseCommand(operation.id)
+    await sql`UPDATE operation SET context = context || '{"kicks": 3}'::jsonb WHERE id = ${operation.id}`.execute(db)
+
+    const result = await reconciler.tick()
+
+    expect(result.abandoned).toBeGreaterThanOrEqual(1)
+    const after = await state(deployment.id, operation.id)
+    expect(after.operation).toMatchObject({ status: 'FAILED' })
+    expect(after.operation.error).toContain('no progress on step ensure_app after 3 restarts')
+    expect(after.deployment).toMatchObject({ status: 'FAILED', active_operation_id: null })
+    const events = await db.selectFrom('audit_event').select(['actor', 'action']).where('target_id', '=', deployment.id).execute()
+    expect(events).toContainEqual({ actor: 'system:reconciler', action: 'deployment.provision_failed' })
+  })
+
+  test('гонка: воркер взял шаг между чтением и пинком — пинок не проходит, команда не дублируется', async () => {
+    const { operation } = await provision()
+    await loseCommand(operation.id)
+    const [stalled] = (await store.stalled(10 * 60_000, 500)).filter((item) => item.operationId === operation.id)
+    if (!stalled) throw new Error('not stalled')
+
+    const claimed = await store.claim(operation.id, 'ensure_app', null, 60_000)
+    expect('reason' in claimed).toBe(false)
+
+    expect(await store.kick(stalled, 'late-wake', 10 * 60_000)).toBe(false)
+    expect(await store.abandon(stalled, { operation: 'FAILED', error: 'late', deploymentStatus: 'FAILED' }, 10 * 60_000)).toBe(false)
+  })
+
+  test('два reconciler одновременно — одна операция будится один раз', async () => {
+    const { operation } = await provision()
+    await loseCommand(operation.id)
+
+    await Promise.all([reconciler.tick(), new OperationReconciler(store, unitOfWork, outbox, audit).tick()])
+
+    expect(await pending(operation.id)).toHaveLength(1)
+    const row = await db.selectFrom('operation').select('context').where('id', '=', operation.id).executeTakeFirstOrThrow()
+    expect(row.context).toMatchObject({ kicks: 1 })
   })
 })

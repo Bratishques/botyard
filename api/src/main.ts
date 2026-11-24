@@ -3,10 +3,12 @@ import { NestFactory } from '@nestjs/core'
 import type { NestExpressApplication } from '@nestjs/platform-express'
 import { Logger } from 'nestjs-pino'
 import { AppModule } from './app.module'
+import { OperationReconciler } from './modules/deployments/application/operation-reconciler'
 import { OperationWorker } from './modules/deployments/application/operation-worker'
 import { OperationStepConsumer } from './modules/deployments/presentation/operation-step.consumer'
 import { type AppConfig, loadConfig, ProcessRole } from './shared/config/config'
 import { createDb } from './shared/database/database'
+import { Housekeeping } from './shared/housekeeping/housekeeping'
 import { HttpExceptionFilter } from './shared/http/http-exception.filter'
 import { connectBroker } from './shared/messaging/rabbitmq'
 import { createProcessLogger } from './shared/observability/logger'
@@ -27,6 +29,8 @@ async function main(): Promise<void> {
       return startRelay(config)
     case ProcessRole.WORKER:
       return startWorker(config)
+    case ProcessRole.RECONCILER:
+      return startReconciler(config)
     default:
       throw new Error(`process role ${config.PROCESS_ROLE} is not implemented yet`)
   }
@@ -112,6 +116,46 @@ async function startWorker(config: AppConfig): Promise<void> {
     logger.info('saga worker stopped')
   }
   await broker.close()
+  await app.close()
+}
+
+/**
+ * Reconciler: раз в `RECONCILE_INTERVAL_MS` будит застрявшие операции и чистит служебные таблицы. Брокер ему не
+ * нужен — команды он пишет в outbox. Сбой прохода — в лог, следующий проход по расписанию; SIGTERM — дождаться
+ * текущего прохода.
+ */
+const RECONCILE_INTERVAL_MS = 30_000
+
+async function startReconciler(config: AppConfig): Promise<void> {
+  const logger = createProcessLogger(config, 'reconciler')
+  const app = await NestFactory.createApplicationContext(AppModule.forRoot(config), { bufferLogs: true })
+  app.useLogger(app.get(Logger))
+  const operations = app.get(OperationReconciler)
+  const housekeeping = app.get(Housekeeping)
+
+  let stopping = false
+  let wake: () => void = () => {}
+  const stop = () => {
+    stopping = true
+    wake()
+  }
+  process.once('SIGTERM', stop)
+  process.once('SIGINT', stop)
+
+  while (!stopping) {
+    try {
+      const woken = await operations.tick()
+      const purged = await housekeeping.tick()
+      if (woken.kicked + woken.abandoned + purged.outbox + purged.idempotency > 0) logger.info({ ...woken, purged }, 'reconciler pass')
+    } catch (error) {
+      logger.error({ err: error }, 'reconciler pass failed')
+    }
+    await new Promise<void>((resolve) => {
+      wake = resolve
+      setTimeout(resolve, RECONCILE_INTERVAL_MS)
+    })
+  }
+  logger.info('reconciler stopped')
   await app.close()
 }
 
