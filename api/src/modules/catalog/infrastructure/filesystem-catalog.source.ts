@@ -3,6 +3,7 @@ import path from 'node:path'
 import Ajv2020, { type ValidateFunction } from 'ajv/dist/2020'
 import addFormats from 'ajv-formats'
 import { CatalogError, CatalogErrorCode, type CatalogSource, type TemplateManifest, type TemplateSource } from '../domain/catalog'
+import { checkTemplate } from './template-variables'
 
 /** Манифест как он лежит в репозитории: со служебной ссылкой на схему */
 type ManifestFile = TemplateManifest & { $schema?: string }
@@ -98,6 +99,16 @@ export class FilesystemCatalogSource implements CatalogSource {
         throw invalid(folder, 'config.template must stay inside the template folder')
       }
       files[name] = await readFile(filePath, 'utf8')
+    }
+
+    // Шаблоны конфига: компилируются, переменные — только допустимые (template-variables.ts)
+    const templates: [string, string][] = [
+      ...Object.entries(raw.config.env ?? {}).map(([variable, value]): [string, string] => [`env ${variable}`, value]),
+      ...Object.entries(files).map(([name, content]): [string, string] => [name, content]),
+    ]
+    for (const [where, source] of templates) {
+      const problems = checkTemplate(source, raw.config.schema)
+      if (problems.length > 0) throw invalid(folder, `${where}: ${problems.join('; ')}`)
     }
 
     // Манифест хранится без служебного `$schema`: это ссылка на файл в репозитории, не часть шаблона

@@ -226,4 +226,11 @@ describe('синхронизация каталога', () => {
   test('неверный путь каталога — понятная ошибка, а не стек', async () => {
     await expect(syncFrom(path.join(dir, 'nowhere'))).rejects.toMatchObject({ code: 'CATALOG_INVALID_MANIFEST' })
   })
+
+  test('опечатка в переменной шаблона конфига — отказ при синхронизации, а не пустое значение в роботе', async () => {
+    const file = path.join(dir, 'templates', 'contest-2022', 'config.toml.tpl')
+    await writeFile(file, (await readFile(file, 'utf8')).replace('{{ platform.tinvestAddress }}', '{{ config.apiAddress }}'))
+
+    await expect(sync()).rejects.toThrow('unknown variable "config.apiAddress"')
+  })
 })
