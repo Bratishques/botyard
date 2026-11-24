@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common'
 import { sql } from 'kysely'
 import { UnitOfWork } from '../../../shared/database/unit-of-work'
-import type { CatalogRepository, CatalogTemplate, TemplateManifest, TemplateSource, TemplateVersion } from '../domain/catalog'
+import type { CatalogRepository, CatalogTemplate, TemplateSource, TemplateVersion } from '../domain/catalog'
 
 @Injectable()
 export class PostgresCatalogRepository implements CatalogRepository {
@@ -25,7 +25,20 @@ export class PostgresCatalogRepository implements CatalogRepository {
     return inserted !== undefined
   }
 
-  async setCurrent(templateId: string, version: string): Promise<void> {
+  async lockForSync(): Promise<void> {
+    await sql`SELECT pg_advisory_xact_lock(hashtextextended('botyard:catalog-sync', 0))`.execute(this.unitOfWork.db())
+  }
+
+  async setCurrent(templateId: string, version: string): Promise<{ previousVersion: string | null; wasRetired: boolean } | 'unchanged'> {
+    const before = await this.unitOfWork
+      .db()
+      .selectFrom('bot_template')
+      .select(['current_version', 'retired'])
+      .where('id', '=', templateId)
+      .forUpdate()
+      .executeTakeFirst()
+    if (before && before.current_version === version && !before.retired) return 'unchanged'
+
     await this.unitOfWork
       .db()
       .insertInto('bot_template')
@@ -34,6 +47,8 @@ export class PostgresCatalogRepository implements CatalogRepository {
         conflict.column('id').doUpdateSet({ current_version: version, retired: false, updated_at: sql<Date>`now()` }),
       )
       .execute()
+
+    return { previousVersion: before?.current_version ?? null, wasRetired: before?.retired ?? false }
   }
 
   async retireMissing(presentIds: readonly string[]): Promise<string[]> {
@@ -63,7 +78,7 @@ export class PostgresCatalogRepository implements CatalogRepository {
       .execute()
 
     return rows.map((row) => {
-      const manifest = row.manifest as unknown as TemplateManifest
+      const manifest = row.manifest
       return {
         id: row.id,
         name: manifest.name,
@@ -90,7 +105,7 @@ export class PostgresCatalogRepository implements CatalogRepository {
     return {
       templateId: row.template_id,
       version: row.version,
-      manifest: row.manifest as unknown as TemplateManifest,
+      manifest: row.manifest,
       files: row.files,
       loadedAt: row.loaded_at,
     }

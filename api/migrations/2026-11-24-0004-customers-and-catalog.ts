@@ -6,8 +6,9 @@ import { type Kysely, sql } from 'kysely'
  * Токен T-Invest — только конвертом; контекст конверта привязан к режиму (песочница или боевой счёт),
  * поэтому переход в боевой режим требует ввести боевой токен заново (docs/architecture.md, «Безопасность»).
  *
- * Шаблон робота версионируется: `bot_template_version` неизменна, её ключ — хеш манифеста и файлов.
- * Развёртывание ссылается на конкретную версию — правка каталога не меняет уже запущенных роботов.
+ * Шаблон робота версионируется: `bot_template_version` неизменна (UPDATE и DELETE запрещены триггером), её
+ * ключ — хеш манифеста и файлов. Развёртывание ссылается на конкретную версию — правка каталога не меняет уже
+ * запущенных роботов. TRUNCATE версий триггер не запрещает; на шаге 2 его закроют внешние ключи развёртываний.
  */
 export async function up(db: Kysely<unknown>): Promise<void> {
   await sql`
@@ -39,8 +40,8 @@ export async function up(db: Kysely<unknown>): Promise<void> {
     CREATE TABLE bot_template_version (
       template_id text NOT NULL REFERENCES bot_template (id),
       version     text NOT NULL CHECK (version ~ '^[0-9a-f]{64}$'),
-      name        text NOT NULL,
-      manifest    jsonb NOT NULL CHECK (jsonb_typeof(manifest) = 'object'),
+      name        text NOT NULL CHECK (name !~ '^[[:space:]]*$'),
+      manifest    jsonb NOT NULL CHECK (jsonb_typeof(manifest) = 'object' AND manifest->>'id' = template_id AND manifest->>'name' = name),
       files       jsonb NOT NULL DEFAULT '{}'::jsonb CHECK (jsonb_typeof(files) = 'object'),
       loaded_at   timestamptz NOT NULL DEFAULT now(),
       PRIMARY KEY (template_id, version)

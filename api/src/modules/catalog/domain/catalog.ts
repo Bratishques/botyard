@@ -87,8 +87,13 @@ export function canonicalJson(value: unknown): string {
 export interface CatalogRepository {
   /** Вставить версию, если её нет; `true` — вставлена этим вызовом */
   insertVersion(templateId: string, version: string, source: TemplateSource): Promise<boolean>
-  /** Сделать версию текущей и снять отметку «выведен» */
-  setCurrent(templateId: string, version: string): Promise<void>
+  /** Синхронизации каталога идут по одной: блокировка до конца транзакции */
+  lockForSync(): Promise<void>
+  /**
+   * Сделать версию текущей и снять отметку «выведен». Пишет, только если что-то меняется; возвращает
+   * прежнее состояние (`null` — шаблона не было), чтобы отчёт и аудит видели переключение
+   */
+  setCurrent(templateId: string, version: string): Promise<{ previousVersion: string | null; wasRetired: boolean } | 'unchanged'>
   /** Пометить выведенными все шаблоны, которых нет в списке; вернуть их id */
   retireMissing(presentIds: readonly string[]): Promise<string[]>
   list(): Promise<CatalogTemplate[]>
@@ -101,5 +106,3 @@ export const CATALOG_REPOSITORY = Symbol('CATALOG_REPOSITORY')
 export interface CatalogSource {
   read(): Promise<TemplateSource[]>
 }
-
-export const CATALOG_SOURCE = Symbol('CATALOG_SOURCE')

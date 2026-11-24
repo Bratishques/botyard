@@ -1,4 +1,5 @@
 import type { ColumnType, Generated } from 'kysely'
+import type { TemplateManifest } from '../../modules/catalog/domain/catalog'
 
 /**
  * Типы таблиц для Kysely. Источник истины — миграции в `migrations/`; этот файл правится
@@ -84,7 +85,7 @@ export interface BotTemplateVersionTable {
   template_id: string
   version: string
   name: string
-  manifest: ColumnType<Record<string, unknown>, string, never>
+  manifest: ColumnType<TemplateManifest, string, never>
   files: ColumnType<Record<string, string>, string | undefined, never>
   loaded_at: CreatedAt
 }
