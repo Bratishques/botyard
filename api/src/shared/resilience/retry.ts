@@ -3,7 +3,7 @@
  *
  * Разброс («full jitter»: случайная задержка от нуля до потолка попытки) нужен, чтобы клиенты,
  * упавшие вместе — например, все воркеры при перезапуске Dokploy, — не возвращались одновременно.
- * Если сервер назвал паузу сам (`Retry-After`), ждём её, но не дольше общего потолка.
+ * Если сервер назвал паузу сам (`Retry-After`), ждём её; пауза длиннее потолка — повтора нет.
  */
 export interface RetryPolicy {
   /** Всего попыток, включая первую */
@@ -46,6 +46,9 @@ export async function withRetry<T>(policy: RetryPolicy, hooks: RetryHooks, call:
     } catch (error) {
       const decision = hooks.classify(error)
       if (!decision.retry || attempt >= policy.attempts || hooks.signal?.aborted) throw error
+      // Сервер просит ждать дольше нашего потолка (у ключа Dokploy бывает сутки): повтор через потолок
+      // заведомо получит тот же отказ — отдаём ошибку сразу, пауза остаётся в ней для вызывающего
+      if (decision.retryAfterMs !== undefined && decision.retryAfterMs > policy.maxDelayMs) throw error
 
       await sleep(retryDelay(policy, attempt, random, decision.retryAfterMs), hooks.signal)
     }

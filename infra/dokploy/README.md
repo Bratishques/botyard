@@ -26,6 +26,11 @@ multipass shell dokploy   # и дальше команда установки в
 ## Подготовка для Botyard
 
 1. **API-ключ:** Settings → Profile → API/CLI Keys. Ключ даёт полный доступ к инстансу: хранить как секрет.
+   **Лимит запросов:** ключ, выпущенный без настроек лимита, на self-hosted Dokploy получает умолчание
+   better-auth — 10 запросов в сутки (проверено на v0.31.4: `429 {"message":"Rate limit exceeded"}`,
+   `Retry-After: 86345`). Botyard ходит в Dokploy постоянно, поэтому ключ выпускается без лимита или
+   с достаточным лимитом. Через API: tRPC `user.createApiKey` с `rateLimitEnabled: false`. Botyard
+   распознаёт исчерпанный лимит и показывает код `DESTINATION_RATE_LIMITED`.
 2. **Проект и окружение:** создать проект `botyard`, взять `environmentId` окружения (`GET /api/project.all`).
 3. **Удалённые серверы (по желанию):** Dokploy умеет разворачивать на подключённые по SSH серверы.
    Их `serverId` указывается в назначении Botyard.

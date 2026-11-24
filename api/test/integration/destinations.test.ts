@@ -21,6 +21,7 @@ import { db } from './setup'
 class FakeCatalog implements DokployCatalog {
   validKey = 'valid-key-0123456789abcdef'
   down = false
+  rateLimited = false
   gate: Promise<void> | null = null
   calls = 0
 
@@ -28,6 +29,7 @@ class FakeCatalog implements DokployCatalog {
     this.calls++
     if (this.gate) await this.gate
     if (this.down) throw new DokployUnavailableError('dokploy project.all: 503')
+    if (this.rateLimited) throw new DokployUnavailableError('dokploy project.all: 429 Rate limit exceeded', 86_345_000)
     if (apiKey !== this.validKey) throw new DokployUnauthorizedError('dokploy project.all: 401 Unauthorized')
     return [{ projectId: 'prj_1', environmentId: 'env_1', name: 'botyard / production' }]
   }
@@ -102,6 +104,9 @@ describe('создание назначения', () => {
     expect(await codeOf(useCases.create(input({ apiKey: 'wrong-key' }), 'operator:1'))).toBe(DestinationErrorCode.KEY_REJECTED)
     expect(await codeOf(useCases.create(input({ environmentId: 'env_x' }), 'operator:1'))).toBe(DestinationErrorCode.ENVIRONMENT_NOT_FOUND)
     expect(await codeOf(useCases.create(input({ serverId: 'srv_x' }), 'operator:1'))).toBe(DestinationErrorCode.SERVER_NOT_FOUND)
+    catalog.rateLimited = true
+    expect(await codeOf(useCases.create(input(), 'operator:1'))).toBe(DestinationErrorCode.RATE_LIMITED)
+    catalog.rateLimited = false
     catalog.down = true
     expect(await codeOf(useCases.create(input(), 'operator:1'))).toBe(DestinationErrorCode.UNREACHABLE)
     expect(await codeOf(useCases.create(input({ baseUrl: 'http://plain.example.com' }), 'operator:1'))).toBe(

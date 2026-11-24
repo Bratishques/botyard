@@ -1,6 +1,8 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from 'bun:test'
 import projectsFixture from '../../../test/fixtures/dokploy/project.all.json'
+import rateLimitedFixture from '../../../test/fixtures/dokploy/rate-limited.json'
 import serversFixture from '../../../test/fixtures/dokploy/server.all.json'
+import unauthorizedFixture from '../../../test/fixtures/dokploy/unauthorized.json'
 import { DokployClient, retryAfterMs } from './dokploy.client'
 import { DokployRejectedError, DokployResponseError, DokployUnauthorizedError, DokployUnavailableError } from './dokploy.errors'
 
@@ -57,16 +59,14 @@ describe('DokployClient', () => {
 
     const projects = await client().listProjects(target())
 
-    expect(projects).toEqual([
-      {
-        projectId: 'prj_botyard_1',
-        name: 'botyard',
-        environments: [
-          { environmentId: 'env_prod_1', name: 'production', isDefault: true },
-          { environmentId: 'env_stage_1', name: 'staging', isDefault: false },
-        ],
-      },
-    ])
+    expect(projects).toEqual(
+      projectsFixture.map((project) => ({
+        projectId: project.projectId,
+        name: project.name,
+        environments: project.environments.map(({ environmentId, name, isDefault }) => ({ environmentId, name, isDefault })),
+      })),
+    )
+    expect(projects[0]?.environments.map((environment) => environment.name).sort()).toEqual(['production', 'staging'])
   })
 
   test('разбирает server.all', async () => {
@@ -90,7 +90,7 @@ describe('DokployClient', () => {
   })
 
   test('401 — неверный ключ, без повторов', async () => {
-    script('project.all', { status: 401, body: { message: 'Unauthorized' } })
+    script('project.all', { status: 401, body: unauthorizedFixture })
 
     await expect(client().listProjects(target())).rejects.toBeInstanceOf(DokployUnauthorizedError)
     expect(seen).toHaveLength(1)
@@ -120,6 +120,19 @@ describe('DokployClient', () => {
     expect(error).toBeInstanceOf(DokployUnavailableError)
     expect((error as DokployUnavailableError).retryAfterMs).toBe(0)
     expect(seen).toHaveLength(3)
+  })
+
+  test('429 с паузой на сутки (лимит ключа Dokploy) — сразу недоступность с паузой, без повторов', async () => {
+    script('project.all', { status: 429, body: rateLimitedFixture, headers: { 'retry-after': '86345' } })
+
+    const error = await client()
+      .listProjects(target())
+      .catch((caught: unknown) => caught)
+
+    expect(error).toBeInstanceOf(DokployUnavailableError)
+    expect((error as DokployUnavailableError).retryAfterMs).toBe(86_345_000)
+    expect(String((error as Error).message)).toContain('Rate limit exceeded')
+    expect(seen).toHaveLength(1)
   })
 
   test('таймаут — недоступность, запрос отменяется', async () => {

@@ -55,6 +55,17 @@ describe('withRetry', () => {
   })
 })
 
+test('пауза сервера длиннее потолка — без повтора', async () => {
+  let calls = 0
+  const failing = withRetry(policy, { classify: () => ({ retry: true, retryAfterMs: 86_345_000 }), sleep: noSleep }, async () => {
+    calls++
+    throw new Error('429 for a day')
+  })
+
+  await expect(failing).rejects.toThrow('429 for a day')
+  expect(calls).toBe(1)
+})
+
 describe('retryDelay', () => {
   test('потолок растёт экспоненциально и упирается в максимум, разброс — от нуля до потолка', () => {
     const top = () => 0.999999

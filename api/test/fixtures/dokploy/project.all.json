@@ -1,17 +1,17 @@
 [
   {
-    "projectId": "prj_botyard_1",
+    "projectId": "nGIz56JkJ_uLXpwATu1ap",
     "name": "botyard",
-    "description": null,
-    "createdAt": "2026-11-24T10:00:00.000Z",
-    "organizationId": "org_1",
+    "description": "fixtures",
+    "createdAt": "2026-11-24T13:26:27.380Z",
+    "organizationId": "cAybHEuIjjwNUzFiQ-T_2",
     "env": "",
     "environments": [
       {
         "name": "production",
-        "environmentId": "env_prod_1",
+        "environmentId": "telHVx4zQCPKML__trC1I",
         "isDefault": true,
-        "applications": [{ "applicationId": "app_1", "name": "by-0193f0a2", "applicationStatus": "running" }],
+        "applications": [],
         "mariadb": [],
         "mongo": [],
         "mysql": [],
@@ -22,7 +22,7 @@
       },
       {
         "name": "staging",
-        "environmentId": "env_stage_1",
+        "environmentId": "s-pYunUJOTOz3qQOEkcG5",
         "isDefault": false,
         "applications": [],
         "mariadb": [],

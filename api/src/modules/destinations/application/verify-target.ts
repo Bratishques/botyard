@@ -42,10 +42,20 @@ export async function verifyTarget(catalog: DokployCatalog, target: Target): Pro
   }
 }
 
+/** Пауза длиннее минуты — это не перегрузка Dokploy, а исчерпанный лимит ключа */
+const RATE_LIMIT_HINT_MS = 60_000
+
 export function toDestinationError(error: unknown): unknown {
   if (error instanceof DestinationError) return error
   if (error instanceof DokployUnauthorizedError)
     return new DestinationError(DestinationErrorCode.KEY_REJECTED, 'dokploy rejected the api key')
+  if (error instanceof DokployUnavailableError && error.retryAfterMs !== undefined && error.retryAfterMs > RATE_LIMIT_HINT_MS) {
+    const hours = Math.ceil(error.retryAfterMs / 3_600_000)
+    return new DestinationError(
+      DestinationErrorCode.RATE_LIMITED,
+      `dokploy api key is rate limited for ~${hours} h: issue a key without a rate limit (infra/dokploy/README.md)`,
+    )
+  }
   if (error instanceof DokployUnavailableError || error instanceof DokployResponseError || error instanceof DokployRejectedError) {
     return new DestinationError(DestinationErrorCode.UNREACHABLE, error.message)
   }
