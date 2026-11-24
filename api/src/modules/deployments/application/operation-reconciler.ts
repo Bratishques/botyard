@@ -69,7 +69,7 @@ export class OperationReconciler {
       if (stalled.kicks >= limit) {
         if (await this.giveUp(stalled)) {
           result.abandoned++
-          this.events.changed(stalled.deploymentId)
+          this.unitOfWork.afterCommit(() => this.events.changed(stalled.deploymentId))
         }
       } else if (await this.wake(stalled)) {
         result.kicked++

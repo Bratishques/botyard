@@ -43,14 +43,17 @@ export class DokployWebhookHandler {
   ) {}
 
   async handle(destinationId: string, event: BuildEvent): Promise<WebhookResult> {
-    let nudged: string | null = null
+    // Прочие типы уведомлений не храним: inbox — для дублей сборок, а не для всего, что пришлёт Dokploy
+    if (event.type !== 'build') {
+      received.inc({ result: 'ignored' })
+      return 'ignored'
+    }
     const result = await this.unitOfWork.run(async (): Promise<WebhookResult> => {
       const dedupKey = createHash('sha256')
         .update([destinationId, event.applicationName, event.status, event.timestamp].join('\n'))
         .digest('hex')
       const accepted = await this.inbox.accept({ dedupKey, destinationId, applicationName: event.applicationName, status: event.status })
       if (!accepted) return 'duplicate'
-      if (event.type !== 'build') return 'ignored'
 
       const wake = Bun.randomUUIDv7()
       const awaiting = await this.store.nudgeAwaitingDeploy(destinationId, event.applicationName, wake)
@@ -62,12 +65,11 @@ export class DokployWebhookHandler {
         step: awaiting.step,
         wake,
       })
-      nudged = awaiting.deploymentId
+      this.unitOfWork.afterCommit(() => this.events.changed(awaiting.deploymentId))
 
       return 'nudged'
     })
     received.inc({ result })
-    if (nudged) this.events.changed(nudged)
 
     return result
   }

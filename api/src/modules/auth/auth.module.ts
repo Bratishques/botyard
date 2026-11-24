@@ -6,6 +6,7 @@ import { MemoryLoginThrottle } from './infrastructure/memory-login-throttle'
 import { PostgresOperatorRepository, PostgresSessionRepository } from './infrastructure/postgres-auth.repositories'
 import { AuthController } from './presentation/auth.controller'
 import { SessionGuard } from './presentation/session.guard'
+import { SessionStreams } from './presentation/session-streams'
 
 @Module({
   controllers: [AuthController],
@@ -14,8 +15,9 @@ import { SessionGuard } from './presentation/session.guard'
     { provide: SESSION_REPOSITORY, useClass: PostgresSessionRepository },
     { provide: LOGIN_THROTTLE, useFactory: () => new MemoryLoginThrottle() },
     AuthService,
+    SessionStreams,
     { provide: APP_GUARD, useClass: SessionGuard },
   ],
-  exports: [AuthService],
+  exports: [AuthService, SessionStreams],
 })
 export class AuthModule {}

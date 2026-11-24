@@ -5,6 +5,7 @@ import { createHttpApp } from '../../src/main'
 import { hashToken } from '../../src/modules/auth/application/auth.service'
 import { CreateOperator } from '../../src/modules/auth/application/create-operator'
 import { PostgresOperatorRepository } from '../../src/modules/auth/infrastructure/postgres-auth.repositories'
+import { STREAMS_PER_OPERATOR } from '../../src/modules/auth/presentation/session-streams'
 import { SyncCatalog } from '../../src/modules/catalog/application/sync-catalog'
 import { FilesystemCatalogSource } from '../../src/modules/catalog/infrastructure/filesystem-catalog.source'
 import { PostgresCatalogRepository } from '../../src/modules/catalog/infrastructure/postgres-catalog.repository'
@@ -416,6 +417,33 @@ describe('живой статус по SSE', () => {
     controller.abort()
     expect((await fetch(`${base}/events/deployments`)).status).toBe(401)
   })
+
+  test('потоков сверх предела на оператора — 429; закрытый поток место освобождает', async () => {
+    const cookie = await session()
+    const open = await Promise.all(
+      Array.from({ length: STREAMS_PER_OPERATOR.events }, async () => {
+        const controller = new AbortController()
+        const response = await fetch(`${base}/events/deployments`, { headers: { cookie }, signal: controller.signal })
+        expect(response.status).toBe(200)
+        return controller
+      }),
+    )
+
+    const extra = await fetch(`${base}/events/deployments`, { headers: { cookie } })
+    expect(extra.status).toBe(429)
+    expect(((await extra.json()) as { code: string }).code).toBe('TOO_MANY_STREAMS')
+
+    open[0]?.abort()
+    let again = 429
+    for (let i = 0; i < 50 && again === 429; i++) {
+      await Bun.sleep(20)
+      const response = await fetch(`${base}/events/deployments`, { headers: { cookie } })
+      again = response.status
+      if (again === 200) await response.body?.cancel()
+    }
+    expect(again).toBe(200)
+    for (const controller of open) controller.abort()
+  })
 })
 
 describe('вебхук Dokploy по HTTP', () => {
@@ -448,6 +476,14 @@ describe('вебхук Dokploy по HTTP', () => {
         headers: { 'content-type': 'application/json', ...headers },
         body: JSON.stringify(buildSuccessFixture),
       })
+
+    // Секрет проверяется раньше тела: пустое тело без секрета — 401, а не 400 со схемой полей
+    const probe = await fetch(`${base}/webhooks/dokploy/${id}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{}',
+    })
+    expect(probe.status).toBe(401)
 
     const anonymous = await post({})
     expect(anonymous.status).toBe(401)

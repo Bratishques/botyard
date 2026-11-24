@@ -186,7 +186,7 @@ export class DestinationUseCases {
       assertVisible(await this.repository.liveApplicationIds(id), visible)
     }
 
-    return this.unitOfWork.run(async () => {
+    const updated = await this.unitOfWork.run(async () => {
       // Роботы назначения живут по прежнему адресу и в прежнем окружении: сага ищет их там. Переезд назначения
       // с живыми роботами оставил бы их работать без управления, а удаление сочло бы их удалёнными
       const live = await this.repository.hasLiveDeployments(id)
@@ -211,6 +211,14 @@ export class DestinationUseCases {
 
       return updated
     })
+
+    // Другой адрес, окружение или ключ — уведомление в Dokploy регистрируется заново (повторяемо; неудача только
+    // записывается). Иначе вебхук остался бы в прежнем Dokploy или с ключом, который больше не действует
+    if (targetChanged) {
+      await this.webhooks.register(updated, input.apiKey ?? (await this.secrets.open(updated.id, updated.baseUrl, updated.apiKeySealed)))
+    }
+
+    return updated
   }
 
   /** Включение и выключение. Повтор (уже в нужном статусе) — без изменений: версия не растёт, аудита нет */

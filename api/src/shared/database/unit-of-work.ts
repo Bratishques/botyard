@@ -16,17 +16,38 @@ import type { Database } from './schema'
  */
 @Injectable()
 export class UnitOfWork {
-  private readonly current = new AsyncLocalStorage<Transaction<Database>>()
+  private readonly current = new AsyncLocalStorage<{ trx: Transaction<Database>; afterCommit: (() => void)[] }>()
 
   constructor(@Inject(DB) private readonly root: Db) {}
 
   db(): Db | Transaction<Database> {
-    return this.current.getStore() ?? this.root
+    return this.current.getStore()?.trx ?? this.root
   }
 
-  run<T>(work: () => Promise<T>): Promise<T> {
+  async run<T>(work: () => Promise<T>): Promise<T> {
     if (this.current.getStore()) return work()
 
-    return this.root.transaction().execute((trx) => this.current.run(trx, work))
+    const afterCommit: (() => void)[] = []
+    const result = await this.root.transaction().execute((trx) => this.current.run({ trx, afterCommit }, work))
+    for (const action of afterCommit) {
+      try {
+        action()
+      } catch {
+        // Действия после коммита — «лучшее усилие» (уведомления): их сбой не отменяет записанное
+      }
+    }
+
+    return result
+  }
+
+  /**
+   * Действие после коммита самой внешней транзакции — для сигналов наружу (событие «развёртывание изменилось»):
+   * внутри вложенного `run` коммита ещё нет, и читатель по сигналу увидел бы старое состояние. При откате действие
+   * не выполняется. Вне транзакции — сразу
+   */
+  afterCommit(action: () => void): void {
+    const store = this.current.getStore()
+    if (store) store.afterCommit.push(action)
+    else action()
   }
 }

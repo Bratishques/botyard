@@ -103,7 +103,7 @@ export class OperationWorker {
     }
     await this.apply(claimed, outcome)
     // После коммита: админка перечитает развёртывание (шаг, попытка, итог)
-    this.events.changed(claimed.deploymentId)
+    this.unitOfWork.afterCommit(() => this.events.changed(claimed.deploymentId))
   }
 
   private async execute(claimed: ClaimedStep, secrets: string[]): Promise<StepOutcome> {

@@ -24,12 +24,12 @@ import {
   Res,
 } from '@nestjs/common'
 import type { Request, Response } from 'express'
-import { openSse } from '../../../shared/http/sse'
 import { ZodBody } from '../../../shared/http/zod-body'
 import { IDEMPOTENCY_KEY, Idempotency, IdempotencyConflictError, IdempotencyErrorCode } from '../../../shared/idempotency/idempotency'
 import type { Operator } from '../../auth/domain/auth'
 import { CurrentOperator } from '../../auth/presentation/session.guard'
-import { DeploymentLogs, LOGS, type LogLine } from '../application/deployment-logs'
+import { SessionStreams } from '../../auth/presentation/session-streams'
+import { DeploymentLogs, LOGS, type LogLine, linesAfter, sinceSecondsFor } from '../application/deployment-logs'
 import { DeploymentUseCases } from '../application/deployment-use-cases'
 import { type Deployment, DeploymentError, DeploymentErrorCode, type Operation, type OperationKind } from '../domain/deployment'
 
@@ -139,6 +139,7 @@ export class DeploymentsController {
     private readonly deployments: DeploymentUseCases,
     private readonly idempotency: Idempotency,
     private readonly logReader: DeploymentLogs,
+    private readonly streams: SessionStreams,
   ) {}
 
   @Get()
@@ -157,11 +158,16 @@ export class DeploymentsController {
    * уходит клиент; ошибка Dokploy — событие `error` с кодом, поток живёт дальше
    */
   @Get(':id/logs/stream')
-  async logStream(@Param('id', DEPLOYMENT_ID) id: string, @Req() request: Request, @Res() response: Response): Promise<void> {
+  async logStream(
+    @Param('id', DEPLOYMENT_ID) id: string,
+    @CurrentOperator() operator: Operator,
+    @Req() request: Request,
+    @Res() response: Response,
+  ): Promise<void> {
     const initial = await http(this.logReader.read(id, { tail: LOGS.defaultTail }))
-    const stream = openSse(request, response)
-    let last = initial.at(-1)?.at
-    for (const line of initial) stream.send('log', line)
+    const stream = this.streams.start(request, response, operator, 'logs')
+    let { fresh, cursor } = linesAfter(initial, null)
+    for (const line of fresh) stream.send('log', line)
 
     let stopped = false
     stream.onClose(() => {
@@ -171,14 +177,15 @@ export class DeploymentsController {
       await Bun.sleep(LOG_POLL_MS)
       if (stopped) break
       try {
-        const fresh = await this.logReader.read(id, { tail: LOGS.maxTail, ...(last && { since: last }) })
-        for (const line of fresh) {
-          if (last && line.at <= last) continue
-          stream.send('log', line)
-          last = line.at
-        }
+        const sinceSeconds = sinceSecondsFor(cursor)
+        const read = await this.logReader.read(id, { tail: LOGS.maxTail, ...(sinceSeconds !== undefined && { sinceSeconds }) })
+        ;({ fresh, cursor } = linesAfter(read, cursor))
+        for (const line of fresh) stream.send('log', line)
       } catch (error) {
-        stream.send('error', { code: error instanceof DeploymentError ? error.code : 'LOGS_UNAVAILABLE' })
+        const code = error instanceof DeploymentError ? error.code : 'LOGS_UNAVAILABLE'
+        stream.send('logs-error', { code })
+        // Развёртывания больше нет — опрашивать нечего
+        if (code === DeploymentErrorCode.NOT_FOUND) stream.close()
       }
     }
   }

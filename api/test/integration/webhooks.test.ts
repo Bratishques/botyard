@@ -56,6 +56,30 @@ describe('вебхук назначения', () => {
     expect(row.notification_id).not.toBeNull()
   })
 
+  test('назначение переехало, пока шла регистрация, — её итог отброшен: уведомление старого Dokploy не выдаётся за действующее', async () => {
+    const notifications = new FakeDokployNotifications()
+    const target = await destination()
+    notifications.during = async () => {
+      await db
+        .updateTable('destination')
+        .set({ base_url: `${target.baseUrl}.moved` })
+        .where('id', '=', target.id)
+        .execute()
+    }
+
+    await new DestinationWebhooks(new PostgresDestinationWebhookRepository(unitOfWork), notifications, publicConfig, box).register(
+      target,
+      'k',
+    )
+
+    const row = await db
+      .selectFrom('destination_webhook')
+      .select('notification_id')
+      .where('destination_id', '=', target.id)
+      .executeTakeFirstOrThrow()
+    expect(row.notification_id).toBeNull()
+  })
+
   test('Dokploy не принял регистрацию — ошибка записана, сценарий не падает; без PUBLIC_API_URL — регистрации нет', async () => {
     const failing = new FakeDokployNotifications()
     failing.fail = true

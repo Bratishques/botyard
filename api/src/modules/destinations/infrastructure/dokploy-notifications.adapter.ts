@@ -43,7 +43,12 @@ export class DokployNotificationsAdapter implements DokployNotifications {
     notification: { name: string; endpoint: string; headers: Record<string, string> },
   ): Promise<string> {
     const target = { baseUrl, apiKey }
-    const existing = await this.find(target, notification.name)
+    // Две одновременные регистрации могли создать два уведомления с одним именем: лишнее слало бы каждое событие
+    // дважды и не обновлялось бы при смене адреса — оставить одно
+    const [existing, ...duplicates] = await this.findAll(target, notification.name)
+    for (const duplicate of duplicates) {
+      await this.client.command(target, 'notification.remove', { notificationId: duplicate.notificationId })
+    }
     if (existing?.customId) {
       await this.client.command(target, 'notification.updateCustom', {
         notificationId: existing.notificationId,
@@ -55,15 +60,15 @@ export class DokployNotificationsAdapter implements DokployNotifications {
     }
 
     await this.client.command(target, 'notification.createCustom', { ...notification, ...EVENTS })
-    const created = await this.find(target, notification.name)
+    const [created] = await this.findAll(target, notification.name)
     if (!created) throw new Error(`dokploy notification ${notification.name} was not found after creation`)
 
     return created.notificationId
   }
 
-  private async find(target: { baseUrl: string; apiKey: string }, name: string) {
+  private async findAll(target: { baseUrl: string; apiKey: string }, name: string) {
     const all = await this.client.query(target, 'notification.all', {}, notificationsSchema)
 
-    return all.find((item) => item.notificationType === 'custom' && item.name === name) ?? null
+    return all.filter((item) => item.notificationType === 'custom' && item.name === name)
   }
 }

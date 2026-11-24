@@ -118,7 +118,7 @@ export class DeploymentUseCases {
 
       return { deployment, operation }
     })
-    this.events.changed(created.deployment.id)
+    this.unitOfWork.afterCommit(() => this.events.changed(created.deployment.id))
 
     return created
   }
@@ -157,7 +157,7 @@ export class DeploymentUseCases {
 
       return { deployment: claimed, operation }
     })
-    this.events.changed(id)
+    this.unitOfWork.afterCommit(() => this.events.changed(id))
 
     return operated
   }

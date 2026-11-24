@@ -177,11 +177,17 @@ export interface DeploymentRepository {
   dueForDriftCheck(intervalMs: number, limit: number): Promise<Deployment[]>
   /**
    * Записать итог сверки: `drift` (`undefined` — вывода нет, прежнее наблюдение остаётся) и время. Условно:
-   * версия та же и операции нет — начатая оператором операция важнее наблюдения. Версию не поднимает: это
+   * версия та же и операции нет — начатая оператором операция важнее наблюдения; `drift_checked_at` тот же, что
+   * был прочитан (`checkedAt`), — иначе после нас уже записали более свежее наблюдение, и наше устарело. Версию не поднимает: это
    * наблюдение, а не правка, и оно не должно ломать оператору условную запись. Возвращает прежнее значение
    * дрейфа или `false`, если запись не прошла
    */
-  recordDrift(id: string, version: number, drift: DeploymentDrift | null | undefined): Promise<{ previous: DeploymentDrift | null } | false>
+  recordDrift(
+    id: string,
+    version: number,
+    checkedAt: Date | null,
+    drift: DeploymentDrift | null | undefined,
+  ): Promise<{ previous: DeploymentDrift | null } | false>
   /** Статус назначения под `FOR SHARE`: выключение ждёт конца транзакции, а не проскакивает мимо */
   lockDestinationStatus(destinationId: string): Promise<string | null>
 }

@@ -45,9 +45,12 @@ export class FakeTradingAccounts implements TradingAccounts {
 export class FakeDokployNotifications implements DokployNotifications {
   readonly registered = new Map<string, { endpoint: string; headers: Record<string, string> }>()
   fail = false
+  /** Вызывается посреди регистрации — для переплетений */
+  during: () => Promise<void> = async () => {}
 
   async upsertCustom(_baseUrl: string, _apiKey: string, notification: { name: string; endpoint: string; headers: Record<string, string> }) {
     if (this.fail) throw new Error('dokploy notification.createCustom: 503')
+    await this.during()
     this.registered.set(notification.name, { endpoint: notification.endpoint, headers: notification.headers })
     return `ntf-${notification.name.slice(-8)}`
   }

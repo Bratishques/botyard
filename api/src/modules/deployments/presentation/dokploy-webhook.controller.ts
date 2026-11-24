@@ -14,6 +14,8 @@ const buildEvent = z.object({
   timestamp: z.string().max(64),
 })
 
+const EVENT_BODY = new ZodBody(buildEvent)
+
 /**
  * Вебхуки Dokploy. Публичная ручка: Dokploy ходит без сессии, подлинность — секрет назначения в заголовке
  * (`x-botyard-token`). Неизвестное назначение и неверный секрет неразличимы — оба 401.
@@ -31,11 +33,12 @@ export class DokployWebhookController {
   async receive(
     @Param('destinationId', new ParseUUIDPipe({ exceptionFactory: () => unauthorized() })) destinationId: string,
     @Headers(WEBHOOK_TOKEN_HEADER) token: string | undefined,
-    @Body(new ZodBody(buildEvent)) event: z.infer<typeof buildEvent>,
+    @Body() body: unknown,
   ): Promise<{ result: string }> {
+    // Сначала секрет, потом тело: без секрета не узнать даже схему полей
     if (!(await this.webhooks.verify(destinationId, token))) throw unauthorized()
 
-    return { result: await this.handler.handle(destinationId, event) }
+    return { result: await this.handler.handle(destinationId, EVENT_BODY.transform(body)) }
   }
 }
 

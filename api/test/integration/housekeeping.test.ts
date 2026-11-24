@@ -94,3 +94,39 @@ describe('ключ идемпотентности и очистка', () => {
     expect(works).toBe(1)
   })
 })
+
+describe('действия после коммита', () => {
+  test('внутри вложенной транзакции — только после коммита внешней; при откате — никогда', async () => {
+    const seen: string[] = []
+    const visibleAtSignal: number[] = []
+    const id = Bun.randomUUIDv7()
+
+    await unitOfWork.run(async () => {
+      await unitOfWork.run(async () => {
+        await sql`INSERT INTO outbox_message (id, topic, payload) VALUES (${id}, 'operation.step', '{}')`.execute(unitOfWork.db())
+        unitOfWork.afterCommit(() => seen.push('committed'))
+      })
+      expect(seen).toEqual([]) // внутренний run закончился, но коммита ещё нет
+      unitOfWork.afterCommit(() => {
+        // Сигнал уходит, когда запись уже видна другим соединениям
+        void db
+          .selectFrom('outbox_message')
+          .select('id')
+          .where('id', '=', id)
+          .execute()
+          .then((rows) => visibleAtSignal.push(rows.length))
+      })
+    })
+    expect(seen).toEqual(['committed'])
+    await Bun.sleep(50)
+    expect(visibleAtSignal).toEqual([1])
+
+    await expect(
+      unitOfWork.run(async () => {
+        unitOfWork.afterCommit(() => seen.push('rolled back'))
+        throw new Error('rollback')
+      }),
+    ).rejects.toThrow('rollback')
+    expect(seen).toEqual(['committed'])
+  })
+})

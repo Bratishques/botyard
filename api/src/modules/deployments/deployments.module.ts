@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common'
+import { AuthModule } from '../auth/auth.module'
 import { CatalogModule } from '../catalog/catalog.module'
 import { CustomersModule } from '../customers/customers.module'
 import { DestinationsModule } from '../destinations/destinations.module'
@@ -21,7 +22,7 @@ import { DeploymentsController } from './presentation/deployments.controller'
 import { DokployWebhookController } from './presentation/dokploy-webhook.controller'
 
 @Module({
-  imports: [CatalogModule, CustomersModule, DestinationsModule],
+  imports: [AuthModule, CatalogModule, CustomersModule, DestinationsModule],
   controllers: [DeploymentsController, DokployWebhookController, DeploymentEventsController],
   providers: [
     { provide: DEPLOYMENT_REPOSITORY, useClass: PostgresDeploymentRepository },

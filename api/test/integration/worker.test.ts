@@ -777,6 +777,22 @@ describe('reconciler застрявших операций', () => {
     expect(events).toContainEqual({ actor: 'system:reconciler', action: 'deployment.provision_failed' })
   })
 
+  test('брошенная операция сбрасывает дрейф: наблюдение было про прежнее состояние', async () => {
+    const { deployment, operation } = await provision()
+    await loseCommand(operation.id)
+    await sql`UPDATE operation SET context = context || '{"kicks": 3}'::jsonb WHERE id = ${operation.id}`.execute(db)
+    await sql`UPDATE bot_deployment SET drift = 'APP_MISSING', drift_checked_at = now() WHERE id = ${deployment.id}`.execute(db)
+
+    await reconciler.tick()
+
+    const row = await db
+      .selectFrom('bot_deployment')
+      .select(['drift', 'drift_checked_at'])
+      .where('id', '=', deployment.id)
+      .executeTakeFirstOrThrow()
+    expect(row).toEqual({ drift: null, drift_checked_at: null })
+  })
+
   test('гонка: воркер взял шаг между чтением и пинком — пинок не проходит, команда не дублируется', async () => {
     const { operation } = await provision()
     await loseCommand(operation.id)
@@ -918,6 +934,22 @@ describe('вебхук Dokploy о сборке', () => {
     expect(platform.calls).toEqual([])
   })
 
+  test('пробуждение не чаще раза в 5 секунд на операцию; событие не о сборке не попадает в inbox', async () => {
+    const { deployment, operation, target } = await awaitingDeploy()
+
+    expect(await handler.handle(target.id, event(deployment.appName, '2026-11-25T10:00:00.000Z'))).toBe('nudged')
+    // Другое событие (не дубль), но сразу следом — опроса Dokploy не добавляет
+    expect(await handler.handle(target.id, event(deployment.appName, '2026-11-25T10:00:01.000Z'))).toBe('ignored')
+    await sql`UPDATE operation SET context = context || jsonb_build_object('nudgedAt', now() - interval '6 seconds') WHERE id = ${operation.id}`.execute(
+      db,
+    )
+    expect(await handler.handle(target.id, event(deployment.appName, '2026-11-25T10:00:02.000Z'))).toBe('nudged')
+
+    expect(await handler.handle(target.id, { ...event(deployment.appName), type: 'backup' })).toBe('ignored')
+    const stored = await db.selectFrom('webhook_inbox').select('status').where('application_name', '=', deployment.appName).execute()
+    expect(stored).toHaveLength(3)
+  })
+
   test('чужое приложение, не-сборка и шаг, который сейчас арендован, — без пробуждения', async () => {
     const { deployment, operation, target } = await awaitingDeploy()
 
@@ -960,6 +992,69 @@ describe('сверка дрейфа с Dokploy', () => {
     expect(events.map((event) => event.action)).toEqual(expect.arrayContaining(['deployment.drift_detected', 'deployment.drift_cleared']))
   })
 
+  test('устаревшее наблюдение (прочитано до чужой записи) не затирает свежее', async () => {
+    currentPlatform = new FakePlatform()
+    const { deployment } = await running(currentPlatform)
+    const repository = new PostgresDeploymentRepository(unitOfWork)
+    const [read] = (await repository.dueForDriftCheck(5 * 60_000, 500)).filter((item) => item.id === deployment.id)
+    if (!read) throw new Error('not due')
+
+    // Другой reconciler успел сверить и записать позже нашего чтения
+    expect(await repository.recordDrift(read.id, read.version, read.driftCheckedAt, null)).not.toBe(false)
+    expect(await repository.recordDrift(read.id, read.version, read.driftCheckedAt, 'STOPPED_IN_DOKPLOY')).toBe(false)
+    expect((await driftOfRow(deployment.id)).drift).toBeNull()
+  })
+
+  test('развёртывание изменилось после чтения (версия) — наблюдение не записывается, даже если время сверки то же', async () => {
+    currentPlatform = new FakePlatform()
+    const { deployment } = await running(currentPlatform)
+    const repository = new PostgresDeploymentRepository(unitOfWork)
+    const [read] = (await repository.dueForDriftCheck(5 * 60_000, 500)).filter((item) => item.id === deployment.id)
+    if (!read) throw new Error('not due')
+
+    await sql`UPDATE bot_deployment SET version = version + 1 WHERE id = ${deployment.id}`.execute(db)
+
+    expect(await repository.recordDrift(read.id, read.version, read.driftCheckedAt, 'STOPPED_IN_DOKPLOY')).toBe(false)
+    expect((await driftOfRow(deployment.id)).drift).toBeNull()
+  })
+
+  test('назначение выключено — его развёртывания не сверяются', async () => {
+    currentPlatform = new FakePlatform()
+    const { deployment } = await running(currentPlatform)
+    const { destination_id } = await db
+      .selectFrom('bot_deployment')
+      .select('destination_id')
+      .where('id', '=', deployment.id)
+      .executeTakeFirstOrThrow()
+    await db.updateTable('destination').set({ status: 'DISABLED' }).where('id', '=', destination_id).execute()
+    try {
+      const due = await new PostgresDeploymentRepository(unitOfWork).dueForDriftCheck(5 * 60_000, 10_000)
+      expect(due.map((item) => item.id)).not.toContain(deployment.id)
+    } finally {
+      await db.updateTable('destination').set({ status: 'ACTIVE' }).where('id', '=', destination_id).execute()
+    }
+  })
+
+  test('дрейф не изменился — повторного аудита нет', async () => {
+    currentPlatform = new FakePlatform()
+    const { deployment } = await running(currentPlatform)
+    const [app] = [...currentPlatform.apps.values()]
+    if (!app) throw new Error('no app')
+
+    app.running = false
+    await reconciler().tick()
+    await due(deployment.id)
+    await reconciler().tick()
+
+    const audited = await db
+      .selectFrom('audit_event')
+      .select('action')
+      .where('target_id', '=', deployment.id)
+      .where('action', '=', 'deployment.drift_detected')
+      .execute()
+    expect(audited).toHaveLength(1)
+  })
+
   test('приложение удалили в Dokploy — APP_MISSING; операция оператора важнее наблюдения; её итог сбрасывает дрейф', async () => {
     currentPlatform = new FakePlatform()
     const { deployment, version } = await running(currentPlatform)
@@ -969,7 +1064,7 @@ describe('сверка дрейфа с Dokploy', () => {
 
     // Оператор запросил redeploy: пока операция активна, сверка развёртывание не трогает
     const redeploy = await deployments.operate(deployment.id, 'REDEPLOY', (await driftOfRow(deployment.id)).version, 'operator:1')
-    expect(await new PostgresDeploymentRepository(unitOfWork).recordDrift(deployment.id, version, null)).toBe(false)
+    expect(await new PostgresDeploymentRepository(unitOfWork).recordDrift(deployment.id, version, null, null)).toBe(false)
     await drive(workerWith(currentPlatform), redeploy.operation.id)
     expect(await driftOfRow(deployment.id)).toMatchObject({ status: 'RUNNING', drift: null })
   })

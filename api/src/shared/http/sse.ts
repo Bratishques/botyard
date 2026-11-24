@@ -2,6 +2,8 @@ import type { Request, Response } from 'express'
 
 /** Пульс — чаще типичного таймаута простоя прокси (Traefik, nginx — 60 с): соединение не обрывают как пустое */
 const HEARTBEAT_MS = 25_000
+/** Столько непереданного держит медленный клиент — дальше поток закрывается, а не копит память процесса */
+export const SSE_MAX_BUFFERED_BYTES = 1024 * 1024
 
 export interface SseStream {
   send(event: string, data: unknown): void
@@ -27,7 +29,13 @@ export function openSse(request: Request, response: Response): SseStream {
 
   const listeners: (() => void)[] = []
   let closed = false
-  const heartbeat = setInterval(() => response.write(': ping\n\n'), HEARTBEAT_MS)
+  const write = (chunk: string) => {
+    if (closed) return
+    response.write(chunk)
+    // Клиент не читает (зависшая вкладка, медленная сеть): буфер ответа растёт без предела
+    if ((response.writableLength ?? 0) > SSE_MAX_BUFFERED_BYTES) finish()
+  }
+  const heartbeat = setInterval(() => write(': ping\n\n'), HEARTBEAT_MS)
   const finish = () => {
     if (closed) return
     closed = true
@@ -35,11 +43,15 @@ export function openSse(request: Request, response: Response): SseStream {
     for (const listener of listeners) listener()
     response.end()
   }
+  // Клиент мог уйти раньше, чем поток открыли (пока шли сессия и первое чтение логов): тогда `close` уже был и не
+  // повторится — проверить сразу. И слушать закрытие и запроса, и ответа: под Bun события приходят по-разному
   request.on('close', finish)
+  response.on('close', finish)
+  if (request.destroyed || response.writableEnded || response.destroyed) queueMicrotask(finish)
 
   return {
     send(event, data) {
-      if (!closed) response.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`)
+      write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`)
     },
     onClose(listener) {
       if (closed) listener()

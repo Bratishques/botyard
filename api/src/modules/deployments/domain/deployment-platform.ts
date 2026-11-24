@@ -64,10 +64,11 @@ export interface DeploymentPlatform {
    */
   appStatus(target: PlatformTarget, appId: string): Promise<string>
   /**
-   * Логи контейнеров приложения: строки `<время RFC3339Nano> <текст>`, `tail` последних, `since` — не раньше
-   * этого момента (RFC3339). Строки разных задач swarm перемешаны
+   * Логи контейнера приложения: строки `<время RFC3339Nano> <текст>`, `tail` последних, `sinceSeconds` — за
+   * последние столько секунд. Dokploy v0.31.4 читает один контейнер приложения и принимает `since` только в виде
+   * `<число>[smhd]` или `all` (проверено на живом инстансе: RFC3339 — 400)
    */
-  readLogs(target: PlatformTarget, appId: string, options: { tail: number; since?: string }): Promise<string>
+  readLogs(target: PlatformTarget, appId: string, options: { tail: number; sinceSeconds?: number }): Promise<string>
 }
 
 export const DEPLOYMENT_PLATFORM = Symbol('DEPLOYMENT_PLATFORM')

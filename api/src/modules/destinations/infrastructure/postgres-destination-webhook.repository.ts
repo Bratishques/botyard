@@ -36,13 +36,18 @@ export class PostgresDestinationWebhookRepository implements DestinationWebhookR
     return toWebhook(row)
   }
 
-  async recordRegistered(destinationId: string, notificationId: string, endpoint: string): Promise<void> {
-    await this.unitOfWork
+  async recordRegistered(destinationId: string, baseUrl: string, notificationId: string, endpoint: string): Promise<boolean> {
+    const result = await this.unitOfWork
       .db()
       .updateTable('destination_webhook')
       .set({ notification_id: notificationId, endpoint, error: null, registered_at: sql<Date>`now()`, updated_at: sql<Date>`now()` })
       .where('destination_id', '=', destinationId)
-      .execute()
+      .where(({ exists, selectFrom }) =>
+        exists(selectFrom('destination').select('id').where('id', '=', destinationId).where('base_url', '=', baseUrl)),
+      )
+      .executeTakeFirst()
+
+    return Number(result.numUpdatedRows) > 0
   }
 
   async recordFailed(destinationId: string, error: string): Promise<void> {

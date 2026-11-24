@@ -34,8 +34,10 @@ multipass shell dokploy   # и дальше команда установки в
 2. **Проект и окружение:** создать проект `botyard`, взять `environmentId` окружения (`GET /api/project.all`).
 3. **Удалённые серверы (по желанию):** Dokploy умеет разворачивать на подключённые по SSH серверы.
    Их `serverId` указывается в назначении Botyard.
-4. **Вебхук (этап 3):** Notifications → Custom → URL `https://<api>/webhooks/dokploy`, заголовок
-   `x-botyard-signature` с общим секретом, события App Deploy и App Build Error.
+4. **Вебхук:** вручную не заводится. Botyard сам создаёт custom-уведомление `botyard-<id назначения>` при создании
+   назначения, его проверке и смене адреса: URL `<PUBLIC_API_URL>/webhooks/dokploy/<id>`, заголовок
+   `x-botyard-token` с секретом назначения, события App Deploy и App Build Error. `PUBLIC_API_URL` должен быть
+   доступен из Dokploy; без него вебхука нет, и статус сборки узнаётся только опросом.
 
 Проверка ключа:
 

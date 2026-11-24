@@ -127,6 +127,7 @@ export class PostgresDeploymentRepository implements DeploymentRepository {
   async recordDrift(
     id: string,
     version: number,
+    checkedAt: Date | null,
     drift: DeploymentDrift | null | undefined,
   ): Promise<{ previous: DeploymentDrift | null } | false> {
     const result = await sql<{ previous: DeploymentDrift | null }>`
@@ -134,6 +135,8 @@ export class PostgresDeploymentRepository implements DeploymentRepository {
       SET drift_checked_at = now()${drift === undefined ? sql`` : sql`, drift = ${drift}`}
       FROM (SELECT id, drift FROM bot_deployment WHERE id = ${id} FOR UPDATE) old
       WHERE d.id = old.id AND d.version = ${version} AND d.active_operation_id IS NULL
+        -- В Postgres микросекунды, в прочитанном Date — миллисекунды: сравнение с усечением
+        AND date_trunc('milliseconds', d.drift_checked_at) IS NOT DISTINCT FROM ${checkedAt}::timestamptz
       RETURNING old.drift AS previous
     `.execute(this.unitOfWork.db())
     const [row] = result.rows

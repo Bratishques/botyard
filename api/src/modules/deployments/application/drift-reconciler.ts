@@ -53,7 +53,7 @@ export class DriftReconciler {
       result.checked++
       if (await this.check(deployment)) {
         result.changed++
-        this.events.changed(deployment.id)
+        this.unitOfWork.afterCommit(() => this.events.changed(deployment.id))
       }
     }
 
@@ -73,7 +73,7 @@ export class DriftReconciler {
     }
 
     return this.unitOfWork.run(async () => {
-      const recorded = await this.deployments.recordDrift(deployment.id, deployment.version, drift)
+      const recorded = await this.deployments.recordDrift(deployment.id, deployment.version, deployment.driftCheckedAt, drift)
       if (!recorded || drift === undefined || recorded.previous === drift) return false
 
       await this.audit.record({

@@ -81,6 +81,8 @@
 | `DESTINATION_ENVIRONMENT_NOT_FOUND`, `DESTINATION_SERVER_NOT_FOUND` | 422 | нет такого окружения или сервера в Dokploy |
 | `DESTINATION_UNREACHABLE` | 503 | Dokploy недоступен или ответил непонятно |
 | `DESTINATION_RATE_LIMITED` | 503 | ключ Dokploy исчерпал свой лимит — выпустить ключ без лимита |
+| `DESTINATION_HAS_DEPLOYMENTS` | 409 | смена адреса, окружения или сервера, пока на назначении есть неудалённые роботы |
+| `DESTINATION_KEY_CANNOT_SEE_DEPLOYMENTS` | 422 | новый ключ не видит приложения роботов назначения — сага не сможет ими управлять |
 
 ## Каталог роботов
 
@@ -146,11 +148,13 @@ attempt, error, requestedBy, createdAt, finishedAt }`; `step` — текущий
 
 | Метод | Путь | Ответ |
 |---|---|---|
-| GET | `/deployments/:id/logs?tail=` | `200 { lines: [{ at, text }] }` — хвост логов робота (`tail` на каждую задачу swarm, по умолчанию 200, не больше 1000), по времени, токен вычищен |
-| GET | `/deployments/:id/logs/stream` | SSE: `log` — `{ at, text }`, сначала хвост, затем новые строки раз в 3 с; `error` — `{ code }` при сбое Dokploy |
-| GET | `/events/deployments` | SSE: `deployment` — `{ deploymentId }`, сигнал перечитать развёртывание через API |
+| GET | `/deployments/:id/logs?tail=` | `200 { lines: [{ at, text }] }` — хвост логов контейнера робота (по умолчанию 200, не больше 1000), по времени, токен вычищен; удалённое развёртывание — `404` |
+| GET | `/deployments/:id/logs/stream` | SSE: `log` — `{ at, text }`, сначала хвост, затем новые строки раз в 3 с без повторов; `logs-error` — `{ code }` при сбое (`DEPLOYMENT_NOT_FOUND` — поток закрывается) |
+| GET | `/events/deployments` | SSE: `deployment` — `{ deploymentId }`, сигнал перечитать развёртывание через API; `resync` — `{}`, события могли потеряться: перечитать список |
 
-SSE требуют сессии, как и прочие ручки; пульс — комментарий раз в 25 с.
+SSE требуют сессии, как и прочие ручки; пульс — комментарий раз в 25 с. Сессия перепроверяется раз в 30 с: после
+выхода поток закрывается. На оператора — не больше 5 потоков событий и 3 потоков логов: сверх —
+`429 TOO_MANY_STREAMS` (обычным JSON, до открытия потока).
 
 Коды: `DEPLOYMENT_NOT_FOUND` (404); `DEPLOYMENT_OPERATION_IN_PROGRESS` (идёт другая операция — дождаться),
 `DEPLOYMENT_INVALID_STATE`, `DEPLOYMENT_VERSION_CONFLICT`, `IDEMPOTENCY_CONFLICT` (409); `DEPLOYMENT_INVALID_CONFIG`
@@ -166,7 +170,7 @@ SSE требуют сессии, как и прочие ручки; пульс �
 
 | Метод | Путь | Тело | Ответ |
 |---|---|---|---|
-| POST | `/webhooks/dokploy/:destinationId` | тело custom-уведомления Dokploy о сборке (`type`, `status`, `applicationName`, `timestamp`; прочее не читается) + заголовок `x-botyard-token` | `200 { result: nudged \| duplicate \| ignored }`; без секрета или с чужим — `401 WEBHOOK_UNAUTHORIZED` |
+| POST | `/webhooks/dokploy/:destinationId` | тело custom-уведомления Dokploy о сборке (`type`, `status`, `applicationName`, `timestamp`; прочее не читается) + заголовок `x-botyard-token` | `200 { result: nudged \| duplicate \| ignored }`; без секрета или с чужим — `401 WEBHOOK_UNAUTHORIZED` (раньше проверки тела); тело не по схеме — `400 VALIDATION_FAILED` |
 
 Ручка без сессии: её вызывает Dokploy. Регистрирует её сам api при создании и проверке назначения, если задан
 `PUBLIC_API_URL`.
@@ -189,5 +193,7 @@ SSE требуют сессии, как и прочие ручки; пульс �
   теперь строгое, как у остальных: лишние поля — `400 VALIDATION_FAILED`.
 - 2026-11-24 — `Idempotency-Key` помнится не меньше суток.
 - 2026-11-25 — вебхуки Dokploy: `POST /webhooks/dokploy/:destinationId`, `WEBHOOK_UNAUTHORIZED`.
+- 2026-11-25 — SSE: событие ошибки логов — `logs-error` (было `error`, совпадало со встроенным событием
+  `EventSource`), `resync` в `/events/deployments`, `429 TOO_MANY_STREAMS`; логи удалённого развёртывания — `404`.
 - 2026-11-25 — `drift` и `driftCheckedAt` в развёртывании.
 - 2026-11-25 — логи робота (`/deployments/:id/logs`, `/logs/stream`) и живой статус (`/events/deployments`) по SSE.

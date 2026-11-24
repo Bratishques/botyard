@@ -151,12 +151,16 @@ export class DokployDeploymentPlatform implements DeploymentPlatform {
     }
   }
 
-  async readLogs(target: PlatformTarget, appId: string, options: { tail: number; since?: string }): Promise<string> {
+  async readLogs(target: PlatformTarget, appId: string, options: { tail: number; sinceSeconds?: number }): Promise<string> {
     return call('application.readLogs', () =>
       this.dokploy.query(
         connection(target),
         'application.readLogs',
-        { applicationId: appId, tail: String(options.tail), ...(options.since && { since: options.since }) },
+        {
+          applicationId: appId,
+          tail: String(options.tail),
+          ...(options.sinceSeconds !== undefined && { since: `${Math.max(1, Math.ceil(options.sinceSeconds))}s` }),
+        },
         z.string(),
       ),
     )

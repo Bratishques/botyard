@@ -5,6 +5,9 @@ import { OutboxTopic } from '../../../shared/outbox/outbox'
 import type { ClaimedStep, ClaimRefusal, Finish, OperationStore, StalledOperation } from '../domain/operation-store'
 import { isSagaStep, type SagaStep } from '../domain/saga'
 
+/** Не чаще — пробуждение ожидания деплоя вебхуком */
+export const NUDGE_INTERVAL_MS = 5_000
+
 /**
  * Операции для воркера саги в Postgres. Аренда — условная запись по шагу и времени аренды; все дальнейшие
  * записи воркера — по шагу и идентификатору аренды, полученным при захвате. Время — базы (`now()`), не процесса.
@@ -222,7 +225,9 @@ export class PostgresOperationStore implements OperationStore {
   async nudgeAwaitingDeploy(destinationId: string, appName: string, wake: string): Promise<StalledOperation | null> {
     const result = await sql<{ id: string; deployment_id: string; kind: StalledOperation['kind']; kicks: number }>`
       UPDATE operation o
-      SET context = o.context || jsonb_build_object('wakeNonce', ${wake}::text), lease_until = NULL, updated_at = now()
+      SET context = o.context || jsonb_build_object('wakeNonce', ${wake}::text, 'nudgedAt', now()),
+          lease_until = NULL,
+          updated_at = now()
       FROM bot_deployment d
       WHERE d.active_operation_id = o.id
         AND d.destination_id = ${destinationId}
@@ -230,6 +235,10 @@ export class PostgresOperationStore implements OperationStore {
         AND o.step = 'await_deploy'
         AND o.status IN ('PENDING', 'RUNNING')
         AND (o.lease_until IS NULL OR o.lease_until < now())
+        -- Не чаще раза в NUDGE_INTERVAL на операцию: поток вебхуков (повторы Dokploy, подделки с утёкшим
+        -- секретом) не превращается в поток опросов Dokploy
+        AND coalesce((o.context->>'nudgedAt')::timestamptz, '-infinity'::timestamptz)
+          < now() - make_interval(secs => ${NUDGE_INTERVAL_MS / 1000})
       RETURNING o.id, o.deployment_id, o.kind, coalesce((o.context->>'kicks')::int, 0) AS kicks
     `.execute(this.unitOfWork.db())
     const [row] = result.rows

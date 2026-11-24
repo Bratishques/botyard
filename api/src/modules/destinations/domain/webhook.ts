@@ -19,7 +19,11 @@ export interface DestinationWebhookRepository {
   find(destinationId: string): Promise<DestinationWebhook | null>
   /** Создать запись с секретом, если её нет; вернуть действующую (гонка двух регистраций — одна запись) */
   ensure(destinationId: string, secretSealed: Uint8Array): Promise<DestinationWebhook>
-  recordRegistered(destinationId: string, notificationId: string, endpoint: string): Promise<void>
+  /**
+   * Записать регистрацию, только если назначение всё ещё указывает на тот Dokploy, где регистрировали: проверка,
+   * начатая до переезда назначения, не должна выдать уведомление старого Dokploy за действующее. `false` — устарела
+   */
+  recordRegistered(destinationId: string, baseUrl: string, notificationId: string, endpoint: string): Promise<boolean>
   recordFailed(destinationId: string, error: string): Promise<void>
 }
 

@@ -42,20 +42,23 @@ export class DestinationWebhooks {
     const endpoint = this.endpointOf(destination.id)
     if (!endpoint) return
 
-    const fresh = randomBytes(32).toString('base64url')
-    const webhook = await this.repository.ensure(destination.id, await this.box.seal(fresh, secretOf(destination.id)))
+    // Целиком «лучшее усилие»: сбой базы или шифрования здесь не должен ронять создание или проверку назначения
     try {
+      const fresh = randomBytes(32).toString('base64url')
+      const webhook = await this.repository.ensure(destination.id, await this.box.seal(fresh, secretOf(destination.id)))
       const secret = await this.box.open(webhook.secretSealed, secretOf(destination.id))
       const notificationId = await this.notifications.upsertCustom(destination.baseUrl, apiKey, {
         name: `botyard-${destination.id}`,
         endpoint,
         headers: { [WEBHOOK_TOKEN_HEADER]: secret },
       })
-      await this.repository.recordRegistered(destination.id, notificationId, endpoint)
+      if (!(await this.repository.recordRegistered(destination.id, destination.baseUrl, notificationId, endpoint))) {
+        this.logger.warn({ destinationId: destination.id }, 'destination moved during webhook registration, result discarded')
+      }
     } catch (error) {
       const reason = error instanceof Error ? error.message : 'registration failed'
       this.logger.warn({ destinationId: destination.id, reason }, 'dokploy webhook registration failed, polling stays in charge')
-      await this.repository.recordFailed(destination.id, reason)
+      await this.repository.recordFailed(destination.id, reason).catch(() => undefined)
     }
   }
 

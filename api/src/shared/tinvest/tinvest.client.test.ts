@@ -155,7 +155,6 @@ describe('клиент T-Invest', () => {
   })
 
   test('пауза перед повтором после 429 — из x-ratelimit-reset; 408 — повторяется как временная ошибка', async () => {
-    let wait: number | undefined
     const retrying = new TInvestClient({
       ...DEFAULT_TINVEST_CLIENT,
       ca: null,
@@ -169,7 +168,7 @@ describe('клиент T-Invest', () => {
     ])
     const started = Date.now()
     await retrying.accounts('live', TOKEN)
-    wait = Date.now() - started
+    const wait = Date.now() - started
     expect(wait).toBeGreaterThanOrEqual(950)
 
     seen.length = 0
