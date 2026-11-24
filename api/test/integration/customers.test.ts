@@ -31,7 +31,7 @@ async function codeOf(work: Promise<unknown>): Promise<string | undefined> {
     await work
     return undefined
   } catch (error) {
-    return (error as { code?: string }).code
+    return typeof error === 'object' && error !== null && 'code' in error && typeof error.code === 'string' ? error.code : undefined
   }
 }
 
@@ -125,6 +125,25 @@ describe('клиенты', () => {
     expect(confirmed.accountId).toBe('2000999999')
   })
 
+  test('аудит показывает, на какой счёт переключили: переход в боевой и смена счёта боевого клиента', async () => {
+    const created = await customers.create(input(), 'operator:1')
+    const live = await customers.goLive(created.id, toLive(1, created.name), 'operator:1')
+    await customers.update(created.id, { version: live.version, accountId: '2000777777', confirmName: created.name }, 'operator:1')
+
+    const audit = await db
+      .selectFrom('audit_event')
+      .select(['action', 'payload'])
+      .where('target_id', '=', created.id)
+      .orderBy('created_at')
+      .execute()
+    expect(audit.find((row) => row.action === 'customer.live_enabled')?.payload).toMatchObject({
+      accountId: { from: SANDBOX_ACCOUNT, to: LIVE_ACCOUNT },
+    })
+    expect(audit.find((row) => row.action === 'customer.account_changed')?.payload).toMatchObject({
+      accountId: { from: LIVE_ACCOUNT, to: '2000777777' },
+    })
+  })
+
   test('переключение режима в базе в обход сценария не делает токен песочницы боевым', async () => {
     const created = await customers.create(input(), 'operator:1')
     await db.updateTable('customer').set({ sandbox: false }).where('id', '=', created.id).execute()
@@ -178,8 +197,8 @@ describe('клиенты', () => {
       ])
 
       expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(1)
-      const rejected = results.find((result) => result.status === 'rejected') as PromiseRejectedResult
-      expect((rejected.reason as { code: string }).code).toBe(CustomerErrorCode.NAME_TAKEN)
+      const rejected = results.find((result): result is PromiseRejectedResult => result.status === 'rejected')
+      expect(rejected?.reason).toMatchObject({ code: CustomerErrorCode.NAME_TAKEN })
     })
   })
 

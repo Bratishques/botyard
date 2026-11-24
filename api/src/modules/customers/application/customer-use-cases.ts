@@ -89,7 +89,12 @@ export class CustomerUseCases {
     }
     if (Object.keys(changes).length === 0) return current
 
-    return this.write(id, input.version, changes, actor, 'customer.updated', { fields: Object.keys(changes) })
+    // Смена счёта боевого клиента — отдельное событие с прежним и новым счётом: по аудиту должно быть видно,
+    // куда направили роботов, торгующих настоящими деньгами
+    const accountChange = changes.accountId === undefined ? {} : { accountId: { from: current.accountId, to: changes.accountId } }
+    const action = changes.accountId !== undefined && !current.sandbox ? 'customer.account_changed' : 'customer.updated'
+
+    return this.write(id, input.version, changes, actor, action, { fields: Object.keys(changes), ...accountChange })
   }
 
   /** Новый токен того же режима */
@@ -124,7 +129,7 @@ export class CustomerUseCases {
       { sandbox: false, accountId, tokenSealed, tokenHint: secretHint(input.token) },
       actor,
       'customer.live_enabled',
-      {},
+      { accountId: { from: current.accountId, to: accountId } },
     )
   }
 
@@ -141,7 +146,7 @@ export class CustomerUseCases {
       { sandbox: true, accountId, tokenSealed, tokenHint: secretHint(input.token) },
       actor,
       'customer.sandbox_enabled',
-      {},
+      { accountId: { from: current.accountId, to: accountId } },
     )
   }
 

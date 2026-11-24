@@ -1,5 +1,5 @@
 import type { ColumnType, Generated } from 'kysely'
-import type { TemplateManifest } from '../../modules/catalog/domain/catalog'
+import type { TemplateManifest } from '../catalog/template-manifest'
 
 /**
  * Типы таблиц для Kysely. Источник истины — миграции в `migrations/`; этот файл правится

@@ -1,6 +1,7 @@
 import { lstat, readdir, readFile, realpath } from 'node:fs/promises'
 import path from 'node:path'
 import Ajv2020, { type ValidateFunction } from 'ajv/dist/2020'
+import addFormats from 'ajv-formats'
 import { CatalogError, CatalogErrorCode, type CatalogSource, type TemplateManifest, type TemplateSource } from '../domain/catalog'
 
 /** Манифест как он лежит в репозитории: со служебной ссылкой на схему */
@@ -23,20 +24,13 @@ export class FilesystemCatalogSource implements CatalogSource {
   constructor(private readonly dir: string) {}
 
   async read(): Promise<TemplateSource[]> {
-    const manifestAjv = new Ajv2020({ allErrors: true, strict: true, strictRequired: false })
-    const configAjv = new Ajv2020({ strict: true })
-    const validateManifest = manifestAjv.compile<ManifestFile>(
-      JSON.parse(await readFile(path.join(this.dir, 'schema', 'template.schema.json'), 'utf8')),
-    )
-
-    const templatesDir = await realpath(path.join(this.dir, 'templates'))
-    const folders = (await readdir(templatesDir, { withFileTypes: true })).map((entry) => entry.name).sort()
+    const { validateManifest, templatesDir, folders } = await this.openCatalog()
 
     const sources: TemplateSource[] = []
     for (const folder of folders) {
       if (folder.startsWith('.')) continue
       try {
-        sources.push(await this.readTemplate(templatesDir, folder, validateManifest, configAjv))
+        sources.push(await this.readTemplate(templatesDir, folder, validateManifest))
       } catch (error) {
         if (error instanceof CatalogError) throw error
         throw invalid(folder, error instanceof Error ? error.message : String(error))
@@ -46,24 +40,48 @@ export class FilesystemCatalogSource implements CatalogSource {
     return sources
   }
 
+  /** Схема каталога и папка шаблонов: ошибки уровня всего каталога — тоже `CATALOG_INVALID_MANIFEST` */
+  private async openCatalog(): Promise<{ validateManifest: ValidateFunction<ManifestFile>; templatesDir: string; folders: string[] }> {
+    const catalogError = (reason: string) => new CatalogError(CatalogErrorCode.INVALID_MANIFEST, `catalog ${this.dir}: ${reason}`)
+    try {
+      const schemaPath = path.join(this.dir, 'schema', 'template.schema.json')
+      const templatesPath = path.join(this.dir, 'templates')
+      await assertPlain(path.join(this.dir, 'schema'), 'directory', catalogError)
+      await assertPlain(schemaPath, 'file', catalogError)
+      await assertPlain(templatesPath, 'directory', catalogError)
+
+      const manifestAjv = new Ajv2020({ allErrors: true, strict: true, strictRequired: false })
+      const validateManifest = manifestAjv.compile<ManifestFile>(JSON.parse(await readFile(schemaPath, 'utf8')))
+      const folders = (await readdir(templatesPath, { withFileTypes: true })).map((entry) => entry.name).sort()
+
+      return { validateManifest, templatesDir: await realpath(templatesPath), folders }
+    } catch (error) {
+      if (error instanceof CatalogError) throw error
+      throw new CatalogError(
+        CatalogErrorCode.INVALID_MANIFEST,
+        `catalog ${this.dir}: ${error instanceof Error ? error.message : String(error)}`,
+      )
+    }
+  }
+
   private async readTemplate(
     templatesDir: string,
     folder: string,
     validateManifest: ValidateFunction<ManifestFile>,
-    configAjv: Ajv2020,
   ): Promise<TemplateSource> {
     const folderPath = path.join(templatesDir, folder)
-    await assertPlain(folderPath, 'directory', folder)
+    await assertPlain(folderPath, 'directory', (reason) => invalid(folder, reason))
 
     const manifestPath = path.join(folderPath, 'template.json')
-    await assertPlain(manifestPath, 'file', folder)
+    await assertPlain(manifestPath, 'file', (reason) => invalid(folder, reason))
     const raw: unknown = JSON.parse(await readFile(manifestPath, 'utf8'))
     if (!validateManifest(raw))
       throw invalid(folder, validateManifest.errors?.map((error) => `${error.instancePath} ${error.message}`).join('; ') ?? 'invalid')
     if (raw.id !== folder) throw invalid(folder, `id "${raw.id}" does not match the folder name`)
 
     try {
-      configAjv.compile(raw.config.schema)
+      // Свой экземпляр на шаблон: одинаковый `$id` в схемах двух шаблонов не должен конфликтовать
+      configSchemaValidator().compile(raw.config.schema)
     } catch (error) {
       throw invalid(folder, `config.schema is not a valid JSON Schema: ${error instanceof Error ? error.message : String(error)}`)
     }
@@ -71,9 +89,11 @@ export class FilesystemCatalogSource implements CatalogSource {
     const files: Record<string, string> = {}
     if (raw.config.template !== undefined) {
       const name = raw.config.template
-      if (!TEMPLATE_FILE.test(name)) throw invalid(folder, 'config.template must be a plain file name inside the template folder')
+      if (!TEMPLATE_FILE.test(name) || name === 'template.json') {
+        throw invalid(folder, 'config.template must be a plain file name inside the template folder, other than template.json')
+      }
       const filePath = path.join(folderPath, name)
-      await assertPlain(filePath, 'file', folder)
+      await assertPlain(filePath, 'file', (reason) => invalid(folder, reason))
       if (path.dirname(await realpath(filePath)) !== (await realpath(folderPath))) {
         throw invalid(folder, 'config.template must stay inside the template folder')
       }
@@ -86,12 +106,23 @@ export class FilesystemCatalogSource implements CatalogSource {
   }
 }
 
+/**
+ * Валидатор схем конфига: строгий режим и стандартные форматы (`uri`, `email`, `date-time`…) — тот же набор
+ * потом проверяет конфиг развёртывания, поэтому формат из схемы не окажется «неизвестным» в одном месте и
+ * рабочим в другом.
+ */
+export function configSchemaValidator(): Ajv2020 {
+  const ajv = new Ajv2020({ strict: true, allErrors: true })
+  addFormats(ajv)
+  return ajv
+}
+
 /** Обычный файл или папка, не симлинк: симлинк из публичного репозитория может вести куда угодно */
-async function assertPlain(target: string, kind: 'file' | 'directory', folder: string): Promise<void> {
+async function assertPlain(target: string, kind: 'file' | 'directory', fail: (reason: string) => CatalogError): Promise<void> {
   const stats = await lstat(target).catch(() => null)
-  if (!stats) throw invalid(folder, `${path.basename(target)} is missing`)
-  if (stats.isSymbolicLink()) throw invalid(folder, `${path.basename(target)} must not be a symlink`)
-  if (kind === 'file' ? !stats.isFile() : !stats.isDirectory()) throw invalid(folder, `${path.basename(target)} must be a ${kind}`)
+  if (!stats) throw fail(`${path.basename(target)} is missing`)
+  if (stats.isSymbolicLink()) throw fail(`${path.basename(target)} must not be a symlink`)
+  if (kind === 'file' ? !stats.isFile() : !stats.isDirectory()) throw fail(`${path.basename(target)} must be a ${kind}`)
 }
 
 function invalid(folder: string, reason: string): CatalogError {

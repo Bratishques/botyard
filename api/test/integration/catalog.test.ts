@@ -23,11 +23,19 @@ const syncFrom = (from: string, options: { allowEmpty?: boolean } = {}) =>
 const sync = () =>
   new SyncCatalog(new FilesystemCatalogSource(dir), repository, unitOfWork, new AuditLog(unitOfWork)).execute('system:test')
 
-async function editManifest(id: string, edit: (manifest: Record<string, unknown>) => void): Promise<void> {
+/** Правка манифеста шаблона по пути полей: `setIn('bita', ['upstream', 'ref'], 'v2')` */
+async function setIn(id: string, keys: readonly string[], value: unknown): Promise<void> {
   const file = path.join(dir, 'templates', id, 'template.json')
-  const manifest = JSON.parse(await readFile(file, 'utf8')) as Record<string, unknown>
-  edit(manifest)
+  const manifest: unknown = JSON.parse(await readFile(file, 'utf8'))
+  let node: unknown = manifest
+  for (const key of keys.slice(0, -1)) node = isObject(node) ? node[key] : undefined
+  if (!isObject(node)) throw new Error(`no ${keys.join('.')} in ${id}`)
+  node[keys.at(-1) ?? ''] = value
   await writeFile(file, JSON.stringify(manifest, null, 2))
+}
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
 beforeEach(async () => {
@@ -56,9 +64,7 @@ describe('синхронизация каталога', () => {
 
   test('правка манифеста — новая версия; старая остаётся и неизменна', async () => {
     const [before] = (await sync()).added.filter((item) => item.templateId === 'bita')
-    await editManifest('bita', (manifest) => {
-      ;(manifest.upstream as Record<string, unknown>).ref = 'v2'
-    })
+    await setIn('bita', ['upstream', 'ref'], 'v2')
     const [after] = (await sync()).added
 
     expect(after?.version).not.toBe(before?.version)
@@ -79,34 +85,24 @@ describe('синхронизация каталога', () => {
     await sync()
     const before = await repository.list()
 
-    await editManifest('bita', (manifest) => {
-      ;(manifest.upstream as Record<string, unknown>).ref = 'v3'
-    })
-    await editManifest('contest-2022', (manifest) => {
-      ;(manifest.config as Record<string, unknown>).schema = { type: 'not-a-type' }
-    })
+    await setIn('bita', ['upstream', 'ref'], 'v3')
+    await setIn('contest-2022', ['config', 'schema'], { type: 'not-a-type' })
 
     await expect(sync()).rejects.toMatchObject({ code: 'CATALOG_INVALID_MANIFEST' })
     expect(await repository.list()).toEqual(before)
   })
 
   test('id манифеста обязан совпадать с папкой', async () => {
-    await editManifest('bita', (manifest) => {
-      manifest.id = 'other'
-    })
+    await setIn('bita', ['id'], 'other')
 
     await expect(sync()).rejects.toThrow('does not match the folder name')
   })
 
   test('откат манифеста на известную версию — переключение в отчёте и аудите', async () => {
     const [original] = (await sync()).added.filter((item) => item.templateId === 'bita')
-    await editManifest('bita', (manifest) => {
-      ;(manifest.upstream as Record<string, unknown>).ref = 'v2'
-    })
+    await setIn('bita', ['upstream', 'ref'], 'v2')
     const [changed] = (await sync()).added
-    await editManifest('bita', (manifest) => {
-      ;(manifest.upstream as Record<string, unknown>).ref = 'main'
-    })
+    await setIn('bita', ['upstream', 'ref'], 'main')
 
     const rollback = await sync()
     expect(rollback.switched).toEqual([{ templateId: 'bita', from: changed?.version ?? '', to: original?.version ?? '' }])
@@ -152,15 +148,11 @@ describe('синхронизация каталога', () => {
   })
 
   test('манифест с лишним полем и опечатка в схеме конфига — отказ', async () => {
-    await editManifest('bita', (manifest) => {
-      manifest.surprise = true
-    })
+    await setIn('bita', ['surprise'], true)
     await expect(sync()).rejects.toMatchObject({ code: 'CATALOG_INVALID_MANIFEST' })
 
     await cp(path.join(BOTS, 'templates', 'bita', 'template.json'), path.join(dir, 'templates', 'bita', 'template.json'))
-    await editManifest('bita', (manifest) => {
-      ;(manifest.config as { schema: Record<string, unknown> }).schema.requird = ['figi']
-    })
+    await setIn('bita', ['config', 'schema', 'requird'], ['figi'])
     await expect(sync()).rejects.toThrow('config.schema is not a valid JSON Schema')
   })
 
@@ -185,6 +177,8 @@ describe('синхронизация каталога', () => {
     // а B — к выводу bita. Без блокировки синхронизации это взаимная блокировка строк
     let bWrote: () => void = () => {}
     const bWroteContest = new Promise<void>((resolve) => (bWrote = resolve))
+    let aWrote: () => void = () => {}
+    const aWroteBita = new Promise<void>((resolve) => (aWrote = resolve))
     const gated = (onSet: (templateId: string) => Promise<void>) =>
       new (class extends PostgresCatalogRepository {
         override async setCurrent(templateId: string, version: string) {
@@ -196,7 +190,10 @@ describe('синхронизация каталога', () => {
     const syncA = new SyncCatalog(
       new FilesystemCatalogSource(dir),
       gated(async (id) => {
-        if (id === 'bita') await Promise.race([bWroteContest, Bun.sleep(300)])
+        if (id === 'bita') {
+          aWrote()
+          await Promise.race([bWroteContest, Bun.sleep(300)])
+        }
       }),
       unitOfWork,
       new AuditLog(unitOfWork),
@@ -210,9 +207,23 @@ describe('синхронизация каталога', () => {
       new AuditLog(unitOfWork),
     )
 
-    const results = await Promise.allSettled([syncA.execute('system:a'), Bun.sleep(30).then(() => syncB.execute('system:b'))])
+    const results = await Promise.allSettled([syncA.execute('system:a'), aWroteBita.then(() => syncB.execute('system:b'))])
     await rm(other, { recursive: true, force: true })
 
     expect(results.map((result) => result.status)).toEqual(['fulfilled', 'fulfilled'])
+  })
+
+  test('схема конфига: стандартные форматы и одинаковый $id в двух шаблонах допустимы; файл шаблона не template.json', async () => {
+    await setIn('bita', ['config', 'schema', 'properties', 'figi', 'items', 'format'], 'uri')
+    await setIn('bita', ['config', 'schema', '$id'], 'https://botyard.local/config')
+    await setIn('contest-2022', ['config', 'schema', '$id'], 'https://botyard.local/config')
+    expect((await sync()).added).toHaveLength(2)
+
+    await setIn('contest-2022', ['config', 'template'], 'template.json')
+    await expect(sync()).rejects.toThrow('other than template.json')
+  })
+
+  test('неверный путь каталога — понятная ошибка, а не стек', async () => {
+    await expect(syncFrom(path.join(dir, 'nowhere'))).rejects.toMatchObject({ code: 'CATALOG_INVALID_MANIFEST' })
   })
 })

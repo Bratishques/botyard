@@ -26,6 +26,8 @@ export class PostgresCatalogRepository implements CatalogRepository {
   }
 
   async lockForSync(): Promise<void> {
+    // Вторая синхронизация ждёт первую, но не бесконечно: зависшая транзакция не должна вешать CLI навсегда
+    await sql`SET LOCAL lock_timeout = '30s'`.execute(this.unitOfWork.db())
     await sql`SELECT pg_advisory_xact_lock(hashtextextended('botyard:catalog-sync', 0))`.execute(this.unitOfWork.db())
   }
 

@@ -1,25 +1,11 @@
 import { createHash } from 'node:crypto'
+import type { TemplateManifest } from '../../../shared/catalog/template-manifest'
 
 /**
  * Каталог роботов. Источник — манифесты в репозитории `bots` (bots/schema/template.schema.json).
  * В базе каждая версия шаблона неизменна; развёртывание ссылается на конкретную версию.
  */
-export interface TemplateManifest {
-  readonly id: string
-  readonly name: string
-  readonly description?: string
-  readonly upstream: { readonly gitUrl: string; readonly ref: string; readonly license: string }
-  readonly build: { readonly type: 'dockerfile'; readonly dockerfile: string; readonly context: string }
-  readonly config: {
-    readonly delivery: 'env' | 'file'
-    readonly schema: Record<string, unknown>
-    readonly env?: Record<string, string>
-    readonly mountPath?: string
-    readonly template?: string
-  }
-  readonly metrics?: { readonly port: number; readonly path: string }
-  readonly notes?: readonly string[]
-}
+export type { TemplateManifest } from '../../../shared/catalog/template-manifest'
 
 /** Шаблон, прочитанный из каталога: манифест и файлы, на которые он ссылается (шаблон конфига) */
 export interface TemplateSource {
