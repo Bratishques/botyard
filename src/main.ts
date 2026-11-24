@@ -1,9 +1,9 @@
 import 'reflect-metadata'
 import { NestFactory } from '@nestjs/core'
+import type { NestExpressApplication } from '@nestjs/platform-express'
 import { Logger } from 'nestjs-pino'
 import { AppModule } from './app.module'
 import { type AppConfig, loadConfig, ProcessRole } from './shared/config/config'
-import { serveMetrics } from './shared/observability/metrics'
 
 /**
  * Один образ — несколько процессов. Роль выбирается окружением, чтобы http, воркер саги, relay
@@ -20,15 +20,18 @@ async function main(): Promise<void> {
   }
 }
 
-async function startHttp(config: AppConfig): Promise<void> {
-  const app = await NestFactory.create(AppModule.forRoot(config), { bufferLogs: true })
+export async function createHttpApp(config: AppConfig): Promise<NestExpressApplication> {
+  const app = await NestFactory.create<NestExpressApplication>(AppModule.forRoot(config), { bufferLogs: true })
   app.useLogger(app.get(Logger))
+  app.disable('x-powered-by')
   app.enableShutdownHooks()
 
-  const metrics = serveMetrics(config.METRICS_PORT)
-  process.once('SIGTERM', () => metrics.stop())
+  return app
+}
 
+async function startHttp(config: AppConfig): Promise<void> {
+  const app = await createHttpApp(config)
   await app.listen(config.PORT)
 }
 
-await main()
+if (import.meta.main) await main()

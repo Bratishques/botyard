@@ -1,8 +1,8 @@
-import { loadConfig } from '../shared/config/config'
+import { loadDatabaseConfig } from '../shared/config/config'
 import { createDb } from '../shared/database/database'
 import { migrateToLatest } from '../shared/database/migrate'
 
-const config = loadConfig()
+const config = loadDatabaseConfig()
 const db = createDb(config.DATABASE_URL, { max: 1 })
 
 try {

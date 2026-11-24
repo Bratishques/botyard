@@ -1,8 +1,11 @@
-import { Counter, collectDefaultMetrics, Histogram, Registry } from 'prom-client'
+import { Inject, Injectable, type OnApplicationShutdown, type OnModuleInit } from '@nestjs/common'
+import { collectDefaultMetrics, Histogram, Registry } from 'prom-client'
+import { APP_CONFIG, type AppConfig } from '../config/config'
 
 export const registry = new Registry()
 collectDefaultMetrics({ register: registry })
 
+/** Число запросов — `_count` этой же гистограммы, отдельный счётчик не нужен */
 export const httpRequestDuration = new Histogram({
   name: 'botyard_http_request_duration_seconds',
   help: 'Длительность HTTP-запросов к api',
@@ -11,26 +14,35 @@ export const httpRequestDuration = new Histogram({
   registers: [registry],
 })
 
-export const httpRequestsTotal = new Counter({
-  name: 'botyard_http_requests_total',
-  help: 'HTTP-запросы к api',
-  labelNames: ['method', 'route', 'status'] as const,
-  registers: [registry],
-})
-
 /**
  * Метрики слушают отдельный порт: основной порт смотрит наружу через прокси, а этот — только
- * во внутреннюю сеть к Prometheus. Так не нужна авторизация на /metrics и нет риска её забыть.
+ * во внутреннюю сеть к Prometheus. Авторизации на нём нет, поэтому публиковать его наружу
+ * нельзя (см. infra/dokploy/README.md). Живёт в жизненном цикле Nest: закрывается вместе
+ * с приложением при любом способе остановки.
  */
-export function serveMetrics(port: number): { stop: () => void } {
-  const server = Bun.serve({
-    port,
-    async fetch(request) {
-      if (new URL(request.url).pathname !== '/metrics') return new Response('not found', { status: 404 })
+@Injectable()
+export class MetricsServer implements OnModuleInit, OnApplicationShutdown {
+  private server: ReturnType<typeof Bun.serve> | undefined
 
-      return new Response(await registry.metrics(), { headers: { 'content-type': registry.contentType } })
-    },
-  })
+  constructor(@Inject(APP_CONFIG) private readonly config: AppConfig) {}
 
-  return { stop: () => server.stop() }
+  onModuleInit(): void {
+    this.server = Bun.serve({
+      hostname: this.config.METRICS_HOST,
+      port: this.config.METRICS_PORT,
+      async fetch(request) {
+        if (new URL(request.url).pathname !== '/metrics') return new Response('not found', { status: 404 })
+
+        return new Response(await registry.metrics(), { headers: { 'content-type': registry.contentType } })
+      },
+    })
+  }
+
+  get port(): number | undefined {
+    return this.server?.port
+  }
+
+  async onApplicationShutdown(): Promise<void> {
+    await this.server?.stop(true)
+  }
 }

@@ -41,14 +41,14 @@ Botyard разворачивает торговых роботов T-Invest API 
 
 | Сущность | Смысл | Ключевые поля |
 |---|---|---|
-| `Destination` | Куда разворачивать: Dokploy-инстанс и, по желанию, удалённый сервер в нём | `baseUrl`, `apiKey` (зашифрован), `projectId`, `environmentId`, `serverId?`, `status` |
+| `Destination` | Куда разворачивать: Dokploy-инстанс и, по желанию, удалённый сервер в нём | `baseUrl` (нормализован), `apiKey` (зашифрован, наружу — `apiKeyHint`), `projectId`, `environmentId`, `serverId?`, `status`: `ACTIVE` / `UNREACHABLE` (последняя проверка не прошла) / `DISABLED` (выключено оператором, новые развёртывания не принимает), `version` |
 | `Customer` | Для кого разворачивается робот | `name`, `tinvestToken` (зашифрован), `accountId`, `sandbox` |
 | `BotTemplate` | Описание робота из репозитория `bots` | `gitUrl`, `ref`, `dockerfile`, `context`, `configSchema`, способ передачи конфига (`env` / `file`) |
 | `BotDeployment` | Робот конкретного клиента на конкретном назначении | `status`, `config`, `dokployAppId?`, `appName` (детерминирован), `activeOperationId?` |
 | `Operation` | Одна операция над развёртыванием: provision, start, stop, redeploy, delete | `kind`, `status`, `step`, `attempt`, `idempotencyKey`, `error?` |
 | `OutboxMessage` | Команда или событие, записанное в одной транзакции с состоянием | `topic`, `payload`, `publishedAt?` |
 | `InboxMessage` | Принятый вебхук Dokploy, дедупликация | `dedupKey` (уникален), `receivedAt` |
-| `AuditEvent` | Кто, что и когда сделал в админке | `actor`, `action`, `target`, `diff` |
+| `AuditEvent` | Кто, что и когда сделал в админке. Только дописывание: UPDATE, DELETE и TRUNCATE запрещены триггером | `actor`, `action`, `targetType`, `targetId`, `payload` (объект), `createdAt` (ставит база) |
 
 `appName` в Dokploy выводится из id развёртывания (`by-<первые 12 символов id>`). Это естественный ключ
 идемпотентности для API, у которого своего ключа нет (см. сагу).

@@ -2,12 +2,10 @@ import { Kysely, PostgresDialect, sql } from 'kysely'
 import pg from 'pg'
 import type { Database } from './schema'
 
+/** bigint (int8) драйвер pg отдаёт строкой: точность не теряется, числом его делает место, которому это нужно */
 export type Db = Kysely<Database>
 
 export const DB = Symbol('DB')
-
-// bigint из Postgres приходит строкой: так он не теряет точность, а числом его делает место, которому это нужно
-pg.types.setTypeParser(pg.types.builtins.INT8, (value) => value)
 
 export function createDb(url: string, options: { max?: number } = {}): Db {
   return new Kysely<Database>({

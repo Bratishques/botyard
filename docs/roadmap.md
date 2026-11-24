@@ -7,6 +7,10 @@
 - Каталог из двух роботов (`bots`), dev-окружение (`infra`).
 
 ## Этап 1. Каркас и назначения
+
+Сделано: каркас, конфиг, логи с маскированием, health, метрики, миграции `destination` и `audit_event`,
+интеграционные тесты, шифрование секретов. Дальше — адаптер Dokploy и CRUD назначений.
+
 - NestJS-приложение, конфиг через zod, pino, health, `/metrics`.
 - Kysely, первые миграции: `destination`, `audit_event`.
 - Шифрование секретов (envelope, AES-256-GCM) с тестами.
@@ -14,6 +18,8 @@
   circuit breaker и таймаут на каждое назначение.
 - CRUD назначений в админ-API, вход оператора (сессия в cookie).
 - CI: lint, typecheck, unit и интеграционные тесты (сервисы Postgres и RabbitMQ в CI).
+- Роли Postgres: миграции — владелец схемы, приложение — роль без владения и без UPDATE/DELETE/TRUNCATE на
+  `audit_event`. Пока приложение ходит владельцем и технически может отключить триггер аудита.
 
 ## Этап 2. Клиенты, шаблоны, сага
 - Миграции: `customer`, `bot_template`, `bot_deployment`, `operation`, `outbox_message`.

@@ -36,5 +36,6 @@ export interface AuditEventTable {
   target_type: string
   target_id: string | null
   payload: ColumnType<Record<string, unknown>, Record<string, unknown> | undefined, never>
-  created_at: CreatedAt
+  // Время события ставит база: журнал, где время задаёт вызывающий, ничего не доказывает
+  created_at: ColumnType<Date, never, never>
 }

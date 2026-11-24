@@ -1,4 +1,4 @@
-import { Controller, Get, HttpCode, Inject, ServiceUnavailableException } from '@nestjs/common'
+import { Controller, Get, HttpCode, Inject, Logger, ServiceUnavailableException } from '@nestjs/common'
 import { READINESS_CHECKS, type ReadinessCheck } from '../domain/readiness-check'
 
 /**
@@ -8,6 +8,8 @@ import { READINESS_CHECKS, type ReadinessCheck } from '../domain/readiness-check
  */
 @Controller('health')
 export class HealthController {
+  private readonly logger = new Logger(HealthController.name)
+
   constructor(@Inject(READINESS_CHECKS) private readonly checks: ReadinessCheck[]) {}
 
   @Get('live')
@@ -23,7 +25,12 @@ export class HealthController {
         try {
           await check.probe()
           return [check.name, 'ok'] as const
-        } catch {
+        } catch (error) {
+          // Причина нужна, чтобы понять, почему под вывели из балансировки. Только код и текст ошибки:
+          // объект подключения со строкой соединения в лог не идёт
+          const reason =
+            error instanceof Error ? { code: (error as { code?: unknown }).code, message: error.message } : { message: String(error) }
+          this.logger.warn({ check: check.name, ...reason }, 'readiness check failed')
           return [check.name, 'fail'] as const
         }
       }),
