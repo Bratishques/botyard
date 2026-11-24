@@ -9,6 +9,9 @@ export interface Database {
   audit_event: AuditEventTable
   operator: OperatorTable
   operator_session: OperatorSessionTable
+  customer: CustomerTable
+  bot_template: BotTemplateTable
+  bot_template_version: BotTemplateVersionTable
 }
 
 type CreatedAt = ColumnType<Date, Date | undefined, never>
@@ -55,4 +58,33 @@ export interface OperatorSessionTable {
   created_at: CreatedAt
   expires_at: Date
   revoked_at: Date | null
+}
+
+export interface CustomerTable {
+  id: string
+  name: string
+  account_id: string
+  tinvest_token_sealed: Uint8Array
+  tinvest_token_hint: string
+  sandbox: Generated<boolean>
+  status: Generated<'ACTIVE' | 'ARCHIVED'>
+  version: Generated<number>
+  created_at: CreatedAt
+  updated_at: UpdatedAt
+}
+
+export interface BotTemplateTable {
+  id: string
+  current_version: string
+  retired: Generated<boolean>
+  updated_at: UpdatedAt
+}
+
+export interface BotTemplateVersionTable {
+  template_id: string
+  version: string
+  name: string
+  manifest: ColumnType<Record<string, unknown>, string, never>
+  files: ColumnType<Record<string, string>, string | undefined, never>
+  loaded_at: CreatedAt
 }

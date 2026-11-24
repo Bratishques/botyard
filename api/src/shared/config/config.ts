@@ -58,6 +58,8 @@ function isTrustProxy(value: string): boolean {
   })
 }
 
+const DEFAULT_BOTS_DIR = new URL('../../../../bots', import.meta.url).pathname
+
 const flag = z
   .enum(['true', 'false'])
   .default('false')
@@ -84,6 +86,8 @@ const schema = z
     // http-адрес назначения: только для локальной разработки, ключ Dokploy по открытому каналу не уходит
     DESTINATIONS_ALLOW_HTTP: flag,
     TRUST_PROXY: trustProxy,
+    // Каталог роботов (репозиторий bots): templates/ и schema/. По умолчанию — соседняя папка монорепо
+    BOTS_CATALOG_DIR: z.string().min(1).default(DEFAULT_BOTS_DIR),
     // Cookie сессии только по https. Выключается для локальной разработки по http
     SESSION_COOKIE_SECURE: z
       .enum(['true', 'false'])

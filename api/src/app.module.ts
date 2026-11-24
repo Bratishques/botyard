@@ -1,6 +1,7 @@
 import { type DynamicModule, type MiddlewareConsumer, Module, type NestModule } from '@nestjs/common'
 import { LoggerModule } from 'nestjs-pino'
 import { AuthModule } from './modules/auth/auth.module'
+import { CatalogModule } from './modules/catalog/catalog.module'
 import { DestinationsModule } from './modules/destinations/destinations.module'
 import { HealthModule } from './modules/health/health.module'
 import { AuditModule } from './shared/audit/audit'
@@ -28,6 +29,7 @@ export class AppModule implements NestModule {
         HealthModule,
         AuthModule,
         DestinationsModule,
+        CatalogModule,
       ],
       providers: [MetricsServer],
     }
