@@ -9,3 +9,11 @@
   где факт виден, записать в `notes`.
 - Шаблоны — Handlebars. Секреты только через `secret.*`, в манифест не вписываются никогда.
 - Значения по умолчанию безопасные: песочница, минимальный объём заявки.
+
+## Подготовка, проверка и ревью
+
+Общие навыки лежат в `../api/.agents/skills` и применяются и здесь:
+[botyard-prepare](../api/.agents/skills/botyard-prepare/SKILL.md) до правки,
+[botyard-verify](../api/.agents/skills/botyard-verify/SKILL.md) с двумя независимыми ревью до отчёта,
+[botyard-error-learning](../api/.agents/skills/botyard-error-learning/SKILL.md) при подтверждённой ошибке агента.
+Порядок коммитов и завершения задачи — раздел «Git и завершение задачи» в [../api/AGENTS.md](../api/AGENTS.md).
