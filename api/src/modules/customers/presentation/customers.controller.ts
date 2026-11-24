@@ -1,4 +1,19 @@
 import {
+  type CustomerCreateBody,
+  type CustomerLiveBody,
+  type CustomerSandboxBody,
+  type CustomerTokenBody,
+  type CustomerUpdateBody,
+  type CustomerView,
+  customerCreateSchema,
+  customerLiveSchema,
+  customerSandboxSchema,
+  customerTokenSchema,
+  customerUpdateSchema,
+  type VersionBody,
+  versionSchema,
+} from '@botyard/contract'
+import {
   BadRequestException,
   Body,
   Controller,
@@ -11,49 +26,11 @@ import {
   Patch,
   Post,
 } from '@nestjs/common'
-import { z } from 'zod'
 import { ZodBody } from '../../../shared/http/zod-body'
 import type { Operator } from '../../auth/domain/auth'
 import { CurrentOperator } from '../../auth/presentation/session.guard'
 import { CustomerUseCases } from '../application/customer-use-cases'
-import { type Customer, CustomerError, CustomerErrorCode, modeOf, type TradingMode } from '../domain/customer'
-
-// Токены T-Invest длинные (t.…); короче 16 — заведомо не токен, а подсказка открыла бы большую его долю.
-// Печатные ASCII без пробелов: токен уходит в заголовок Authorization
-const token = z
-  .string()
-  .trim()
-  .min(16)
-  .max(512)
-  .regex(/^[\x21-\x7e]+$/, 'must be printable ASCII without spaces')
-const version = z.number().int().positive()
-
-const createSchema = z.object({ name: z.string().max(200), accountId: z.string().max(100), token }).strict()
-const updateSchema = z
-  .object({
-    version,
-    name: z.string().max(200).optional(),
-    accountId: z.string().max(100).optional(),
-    confirmName: z.string().max(200).optional(),
-  })
-  .strict()
-const tokenSchema = z.object({ version, token }).strict()
-const liveSchema = z.object({ version, token, accountId: z.string().max(100), confirmName: z.string().max(200) }).strict()
-const sandboxSchema = z.object({ version, token, accountId: z.string().max(100) }).strict()
-const versionSchema = z.object({ version }).strict()
-
-/** Клиент наружу: без конверта токена, только подсказка */
-export interface CustomerView {
-  id: string
-  name: string
-  accountId: string
-  tokenHint: string
-  mode: TradingMode
-  status: Customer['status']
-  version: number
-  createdAt: string
-  updatedAt: string
-}
+import { type Customer, CustomerError, CustomerErrorCode, modeOf } from '../domain/customer'
 
 function view(customer: Customer): CustomerView {
   return {
@@ -118,14 +95,14 @@ export class CustomersController {
   }
 
   @Post()
-  async create(@Body(new ZodBody(createSchema)) body: z.infer<typeof createSchema>, @CurrentOperator() operator: Operator) {
+  async create(@Body(new ZodBody(customerCreateSchema)) body: CustomerCreateBody, @CurrentOperator() operator: Operator) {
     return view(await http(this.customers.create(body, actor(operator))))
   }
 
   @Patch(':id')
   async update(
     @Param('id', CUSTOMER_ID) id: string,
-    @Body(new ZodBody(updateSchema)) body: z.infer<typeof updateSchema>,
+    @Body(new ZodBody(customerUpdateSchema)) body: CustomerUpdateBody,
     @CurrentOperator() operator: Operator,
   ) {
     return view(await http(this.customers.update(id, body, actor(operator))))
@@ -135,7 +112,7 @@ export class CustomersController {
   @HttpCode(HttpStatus.OK)
   async rotateToken(
     @Param('id', CUSTOMER_ID) id: string,
-    @Body(new ZodBody(tokenSchema)) body: z.infer<typeof tokenSchema>,
+    @Body(new ZodBody(customerTokenSchema)) body: CustomerTokenBody,
     @CurrentOperator() operator: Operator,
   ) {
     return view(await http(this.customers.rotateToken(id, body, actor(operator))))
@@ -145,7 +122,7 @@ export class CustomersController {
   @HttpCode(HttpStatus.OK)
   async goLive(
     @Param('id', CUSTOMER_ID) id: string,
-    @Body(new ZodBody(liveSchema)) body: z.infer<typeof liveSchema>,
+    @Body(new ZodBody(customerLiveSchema)) body: CustomerLiveBody,
     @CurrentOperator() operator: Operator,
   ) {
     return view(await http(this.customers.goLive(id, body, actor(operator))))
@@ -155,7 +132,7 @@ export class CustomersController {
   @HttpCode(HttpStatus.OK)
   async goSandbox(
     @Param('id', CUSTOMER_ID) id: string,
-    @Body(new ZodBody(sandboxSchema)) body: z.infer<typeof sandboxSchema>,
+    @Body(new ZodBody(customerSandboxSchema)) body: CustomerSandboxBody,
     @CurrentOperator() operator: Operator,
   ) {
     return view(await http(this.customers.goSandbox(id, body, actor(operator))))
@@ -165,7 +142,7 @@ export class CustomersController {
   @HttpCode(HttpStatus.OK)
   async archive(
     @Param('id', CUSTOMER_ID) id: string,
-    @Body(new ZodBody(versionSchema)) body: z.infer<typeof versionSchema>,
+    @Body(new ZodBody(versionSchema)) body: VersionBody,
     @CurrentOperator() operator: Operator,
   ) {
     return view(await http(this.customers.archive(id, body.version, actor(operator))))

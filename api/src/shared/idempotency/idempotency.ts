@@ -3,7 +3,8 @@ import { Global, Injectable, Module } from '@nestjs/common'
 import { UnitOfWork } from '../database/unit-of-work'
 import { canonicalJson } from '../json/canonical-json'
 
-export const IDEMPOTENCY_KEY = /^[A-Za-z0-9_-]{8,128}$/
+/** Формат ключа — из контракта API: один источник для api и админки */
+export { IDEMPOTENCY_KEY } from '@botyard/contract'
 
 /** Коды ответа API про сам ключ, а не про действие */
 export const IdempotencyErrorCode = {

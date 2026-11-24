@@ -1,0 +1,28 @@
+{
+  "name": "botyard",
+  "private": true,
+  "packageManager": "bun@1.4.4",
+  "workspaces": {
+    "packages": [
+      "api",
+      "packages/*"
+    ],
+    "catalog": {
+      "zod": "^4.6.7",
+      "typescript": "^7.0.2",
+      "@biomejs/biome": "^2.6.8",
+      "@types/bun": "^1.4.5"
+    }
+  },
+  "scripts": {
+    "check": "turbo run lint lint:root typecheck test",
+    "test:int": "turbo run test:int",
+    "test:contract": "turbo run test:contract",
+    "format": "turbo run format && biome check --write package.json turbo.json biome.json",
+    "lint:root": "biome check package.json turbo.json biome.json"
+  },
+  "devDependencies": {
+    "turbo": "^2.11.13",
+    "@biomejs/biome": "catalog:"
+  }
+}

@@ -1,3 +1,4 @@
+import { type LoginBody, loginSchema } from '@botyard/contract'
 import {
   Body,
   Controller,
@@ -13,15 +14,12 @@ import {
   UnauthorizedException,
 } from '@nestjs/common'
 import type { Request, Response } from 'express'
-import { z } from 'zod'
 import { APP_CONFIG, type AppConfig } from '../../../shared/config/config'
 import { Public } from '../../../shared/http/public'
 import { ZodBody } from '../../../shared/http/zod-body'
 import { AuthService } from '../application/auth.service'
 import { AuthError, AuthErrorCode, type Operator } from '../domain/auth'
 import { CurrentOperator, readCookie, SESSION_COOKIE } from './session.guard'
-
-const loginSchema = z.object({ email: z.string().min(3).max(254), password: z.string().min(1).max(256) }).strict()
 
 @Controller('auth')
 export class AuthController {
@@ -34,7 +32,7 @@ export class AuthController {
   @Post('login')
   @HttpCode(200)
   async login(
-    @Body(new ZodBody(loginSchema)) body: z.infer<typeof loginSchema>,
+    @Body(new ZodBody(loginSchema)) body: LoginBody,
     @Req() request: Request,
     @Res({ passthrough: true }) response: Response,
   ): Promise<Operator> {
