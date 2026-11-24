@@ -42,8 +42,9 @@ Botyard разворачивает торговых роботов T-Invest API 
 | Сущность | Смысл | Ключевые поля |
 |---|---|---|
 | `Destination` | Куда разворачивать: Dokploy-инстанс и, по желанию, удалённый сервер в нём | `baseUrl` (нормализован), `apiKey` (зашифрован, наружу — `apiKeyHint`), `projectId`, `environmentId`, `serverId?`, `status`: `ACTIVE` / `UNREACHABLE` (последняя проверка не прошла) / `DISABLED` (выключено оператором, новые развёртывания не принимает), `version` |
-| `Customer` | Для кого разворачивается робот | `name`, `tinvestToken` (зашифрован), `accountId`, `sandbox` |
-| `BotTemplate` | Описание робота из репозитория `bots` | `gitUrl`, `ref`, `dockerfile`, `context`, `configSchema`, способ передачи конфига (`env` / `file`) |
+| `Customer` | Для кого разворачивается робот | `name`, `accountId`, `tinvestToken` (конверт привязан к режиму: токен песочницы не открывается как боевой), `sandbox` (по умолчанию `true`; боевой режим — новый токен и подтверждение именем), `status` (`ACTIVE` / `ARCHIVED`), `version` |
+| `BotTemplate` | Описание робота из репозитория `bots` (`bun run catalog:sync`) | `gitUrl`, `ref`, `dockerfile`, `context`, `configSchema`, способ передачи конфига (`env` / `file`); текущая версия и отметка «выведен» |
+| `BotTemplateVersion` | Неизменная версия шаблона; на неё ссылается развёртывание | `version` — SHA-256 канонического манифеста и файлов, `manifest`, `files`; UPDATE и DELETE запрещены триггером |
 | `BotDeployment` | Робот конкретного клиента на конкретном назначении | `status`, `config`, `dokployAppId?`, `appName` (детерминирован), `activeOperationId?` |
 | `Operation` | Одна операция над развёртыванием: provision, start, stop, redeploy, delete | `kind`, `status`, `step`, `attempt`, `idempotencyKey`, `error?` |
 | `OutboxMessage` | Команда или событие, записанное в одной транзакции с состоянием | `topic`, `payload`, `publishedAt?` |

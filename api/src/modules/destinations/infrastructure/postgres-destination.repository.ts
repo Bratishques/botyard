@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common'
 import { type Selectable, sql } from 'kysely'
+import { isUniqueViolation } from '../../../shared/database/pg-errors'
 import type { DestinationTable } from '../../../shared/database/schema'
 import { UnitOfWork } from '../../../shared/database/unit-of-work'
 import type { Destination } from '../domain/destination'
@@ -35,10 +36,6 @@ function conflictOf(error: unknown): DestinationConflict | null {
   if (!isUniqueViolation(error)) return null
 
   return new DestinationConflict(error.constraint === 'destination_name_uq' ? 'name' : 'target')
-}
-
-function isUniqueViolation(error: unknown): error is { code: '23505'; constraint?: string } {
-  return typeof error === 'object' && error !== null && 'code' in error && error.code === '23505'
 }
 
 @Injectable()
