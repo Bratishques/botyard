@@ -39,7 +39,9 @@ export class TInvestTradingAccounts implements TradingAccounts {
     if (!account || account.status === 'ACCOUNT_STATUS_CLOSED') return { ok: false, reason: 'ACCOUNT_NOT_FOUND' }
     // Песочница — для роботов без проверки TLS тоже: токен с полным доступом к реальному счёту здесь не хранится
     const real = await this.accounts('live', token)
-    if (real !== 'REJECTED' && real.some((candidate) => candidate.accessLevel === 'ACCOUNT_ACCESS_LEVEL_FULL_ACCESS')) {
+    const fullAccess = (candidate: { status: string; accessLevel: string }) =>
+      candidate.status === 'ACCOUNT_STATUS_OPEN' && candidate.accessLevel === 'ACCOUNT_ACCESS_LEVEL_FULL_ACCESS'
+    if (real !== 'REJECTED' && real.some(fullAccess)) {
       return { ok: false, reason: 'LIVE_TOKEN_IN_SANDBOX' }
     }
 

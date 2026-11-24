@@ -57,6 +57,16 @@ describe('проверка счёта клиента в T-Invest', () => {
       },
     })
     expect(await readOnlyReal.check('t.x', 'sandbox', '2000000001')).toEqual({ ok: true })
+
+    // Полный доступ только к закрытому реальному счёту — денег через токен не достать
+    const closedReal = broker({
+      sandbox: { status: 200, body: accountsFixture },
+      live: {
+        status: 200,
+        body: { accounts: [{ id: '9', status: 'ACCOUNT_STATUS_CLOSED', accessLevel: 'ACCOUNT_ACCESS_LEVEL_FULL_ACCESS' }] },
+      },
+    })
+    expect(await closedReal.check('t.x', 'sandbox', '2000000001')).toEqual({ ok: true })
   })
 
   test('боевой режим: копилка и прочие счета без заявок — ACCOUNT_NOT_TRADABLE; токен не по форме — отклонён до запроса', async () => {

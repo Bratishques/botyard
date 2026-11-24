@@ -360,6 +360,20 @@ describe('развёртывания по HTTP', () => {
 })
 
 describe('клиенты по HTTP', () => {
+  test('токен с пробелом или кириллицей — 400 VALIDATION_FAILED без значения токена', async () => {
+    const cookie = await session()
+    for (const token of ['t.with space 0123456789', 't.кириллица-0123456789']) {
+      const response = await fetch(
+        `${base}/customers`,
+        json({ name: `t-${crypto.randomUUID().slice(0, 8)}`, accountId: 'acc', token }, cookie),
+      )
+      const text = await response.text()
+      expect(response.status).toBe(400)
+      expect(text).toContain('VALIDATION_FAILED')
+      expect(text).not.toContain(token)
+    }
+  })
+
   test('проверка токенов выключена (тесты): боевой режим — 409 CUSTOMER_LIVE_CHECK_DISABLED, клиент в песочнице', async () => {
     const cookie = await session()
     const name = `live-${crypto.randomUUID().slice(0, 8)}`

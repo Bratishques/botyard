@@ -55,7 +55,7 @@ const errorSchema = z.object({
  * Исходы, которые различает вызывающий:
  * - `TInvestUnauthenticatedError` — токен не найден или не активен (401, код 40003): повтор не поможет;
  * - `TInvestRejectedError` — прочие 4xx (403 — недостаточно прав и т. п.);
- * - `TInvestUnavailableError` — сеть, таймаут, 5xx, лимит запросов: исход временный.
+ * - `TInvestUnavailableError` — сеть, таймаут, 408, 5xx, лимит запросов (429): исход временный.
  * Токен в текст ошибок не попадает: он только в заголовке.
  */
 export class TInvestError extends Error {}
@@ -110,7 +110,8 @@ export interface TInvestClientOptions {
 }
 
 /**
- * Проверку ждёт оператор в запросе админки: две попытки по 8 с — не дольше ~17 с вместе с паузой
+ * Проверку ждёт оператор в запросе админки: две попытки по 8 с — до ~17 с на один вызов. Песочница делает
+ * два вызова подряд (контур песочницы и боевой), то есть до ~33 с
  */
 export const DEFAULT_TINVEST_CLIENT: TInvestClientOptions = {
   timeoutMs: 8_000,

@@ -134,6 +134,58 @@ describe('клиент T-Invest', () => {
     expect(await failure(client.accounts('live', TOKEN))).toBeInstanceOf(TInvestUnavailableError)
   })
 
+  test('429 подряд не размыкают цепь контура: лимит — свойство токена, а не отказ T-Invest', async () => {
+    const tight = new TInvestClient({
+      ...DEFAULT_TINVEST_CLIENT,
+      ca: null,
+      baseUrls: { live: `http://127.0.0.1:${server.port}/live`, sandbox: `http://127.0.0.1:${server.port}/sandbox` },
+      retry: { attempts: 1, baseDelayMs: 1, maxDelayMs: 1 },
+      breaker: { failureThreshold: 2, openMs: 60_000 },
+    })
+    const limited = { status: 429, body: { code: 8, message: 'Request limit exceeded', description: 80002 } }
+    replies.set('UsersService/GetAccounts', [limited, limited, limited, { status: 200, body: accountsFixture }])
+
+    for (let i = 0; i < 3; i++) {
+      const error = await failure(tight.accounts('live', TOKEN))
+      expect(error).toMatchObject({ rateLimited: true })
+      // description числом (как в OpenAPI) — код не теряется
+      expect(error.message).toContain('(80002)')
+    }
+    expect(await tight.accounts('live', TOKEN)).toHaveLength(4)
+  })
+
+  test('пауза перед повтором после 429 — из x-ratelimit-reset; 408 — повторяется как временная ошибка', async () => {
+    let wait: number | undefined
+    const retrying = new TInvestClient({
+      ...DEFAULT_TINVEST_CLIENT,
+      ca: null,
+      baseUrls: { live: `http://127.0.0.1:${server.port}/live`, sandbox: `http://127.0.0.1:${server.port}/sandbox` },
+      retry: { attempts: 2, baseDelayMs: 1, maxDelayMs: 5_000 },
+      random: () => 0,
+    })
+    replies.set('UsersService/GetAccounts', [
+      { status: 429, body: { code: 8, message: 'Request limit exceeded', description: '80002' }, headers: { 'x-ratelimit-reset': '1' } },
+      { status: 200, body: accountsFixture },
+    ])
+    const started = Date.now()
+    await retrying.accounts('live', TOKEN)
+    wait = Date.now() - started
+    expect(wait).toBeGreaterThanOrEqual(950)
+
+    seen.length = 0
+    replies.set('UsersService/GetAccounts', [
+      { status: 408, body: { code: 4, message: 'timeout' } },
+      { status: 200, body: accountsFixture },
+    ])
+    expect(await retrying.accounts('live', TOKEN)).toHaveLength(4)
+    expect(seen).toHaveLength(2)
+  })
+
+  test('по умолчанию — две попытки по 8 с: проверку ждёт оператор в запросе', () => {
+    expect(DEFAULT_TINVEST_CLIENT.retry.attempts).toBe(2)
+    expect(DEFAULT_TINVEST_CLIENT.timeoutMs).toBe(8_000)
+  })
+
   test('неожиданная форма ответа — недоступность, а не пустой список', async () => {
     replies.set('UsersService/GetAccounts', [
       { status: 200, body: { accounts: 'nope' } },
