@@ -32,6 +32,7 @@ export const CustomerErrorCode = {
   LIVE_CONFIRMATION_REQUIRED: 'CUSTOMER_LIVE_CONFIRMATION_REQUIRED',
   ALREADY_IN_MODE: 'CUSTOMER_ALREADY_IN_MODE',
   ARCHIVED: 'CUSTOMER_ARCHIVED',
+  HAS_DEPLOYMENTS: 'CUSTOMER_HAS_DEPLOYMENTS',
 } as const
 export type CustomerErrorCode = (typeof CustomerErrorCode)[keyof typeof CustomerErrorCode]
 
@@ -89,6 +90,8 @@ export interface CustomerRepository {
   findById(id: string): Promise<Customer | null>
   list(): Promise<Customer[]>
   update(id: string, expectedVersion: number, changes: CustomerChanges): Promise<Customer | null>
+  /** Блокирует строку клиента (FOR UPDATE) и отвечает, есть ли у него неудалённые развёртывания */
+  hasLiveDeployments(id: string): Promise<boolean>
 }
 
 export const CUSTOMER_REPOSITORY = Symbol('CUSTOMER_REPOSITORY')

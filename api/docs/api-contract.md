@@ -12,8 +12,11 @@
 - Изменяющие запросы (`POST`, `PATCH`) — только `Content-Type: application/json`, иначе `415 JSON_REQUIRED`.
   Вместе с cookie `SameSite=Strict` это защита от CSRF; CORS api не открывает, админка ходит с того же origin.
 - Всё, кроме `/health/*`, `/auth/login` и `/auth/logout`, требует сессии: без неё `401 UNAUTHENTICATED`.
-- `Idempotency-Key` появится на этапе 2 вместе с развёртываниями. Назначения от дублей защищают
-  уникальность имени и пары «окружение Dokploy + сервер» (`409`) и правка по `version`.
+- `Idempotency-Key` (8–128 символов `A-Z a-z 0-9 - _`) обязателен для изменяющих запросов к развёртываниям:
+  повтор с тем же ключом и телом возвращает прежний ответ с прежним кодом, тот же ключ с другим телом —
+  `409 IDEMPOTENCY_CONFLICT`, без ключа — `400 IDEMPOTENCY_KEY_REQUIRED`. Ключ — на одну попытку пользователя
+  (генерировать при открытии формы, а не на каждый HTTP-запрос). Назначения и клиенты от дублей защищают
+  уникальность и правка по `version`.
 - Ошибка проверки тела или параметра — `400 VALIDATION_FAILED` с путями полей, без значений (в теле бывают
   секреты). Тело — не JSON — `400 INVALID_JSON` без текста парсера.
 - `409` на повтор после обрыва может означать, что первый запрос прошёл: перечитать состояние, а не повторять.
@@ -105,6 +108,31 @@
 Коды: `CUSTOMER_NOT_FOUND` (404); `CUSTOMER_NAME_TAKEN`, `CUSTOMER_VERSION_CONFLICT`, `CUSTOMER_ALREADY_IN_MODE`,
 `CUSTOMER_ARCHIVED` (409); `CUSTOMER_INVALID_NAME`, `CUSTOMER_INVALID_ACCOUNT` (400); `CUSTOMER_LIVE_CONFIRMATION_REQUIRED` (422).
 
+## Развёртывания
+
+`Deployment`: `{ id, customerId, destinationId, templateId, templateVersion, config, appName, status, activeOperationId,
+lastError, version, createdAt, updatedAt }`; статусы `PROVISIONING | RUNNING | STOPPED | FAILED | DELETING | DELETED`.
+`Operation`: `{ id, kind: PROVISION | START | STOP | REDEPLOY | DELETE, status: PENDING | RUNNING | SUCCEEDED | FAILED, step,
+attempt, error, requestedBy, createdAt, finishedAt }`. Операции выполняет воркер (этап 2, шаг 3); ответ на запрос —
+принятая операция, а не её результат.
+
+| Метод | Путь | Тело | Ответ |
+|---|---|---|---|
+| GET | `/deployments` | — | `200 Deployment[]` |
+| GET | `/deployments/:id` | — | `200 Deployment & { operations: Operation[] }` |
+| POST | `/deployments` | `{ customerId, destinationId, templateId, config }` + `Idempotency-Key` | `201 Deployment & { operation }`; конфиг проверяется по `configSchema` текущей версии шаблона, `default` подставляются |
+| POST | `/deployments/:id/start` | `{ version }` + `Idempotency-Key` | `202 Deployment & { operation }` — из `STOPPED` |
+| POST | `/deployments/:id/stop` | то же | `202` — из `RUNNING` |
+| POST | `/deployments/:id/redeploy` | то же | `202` — из `RUNNING`, `STOPPED`, `FAILED` |
+| POST | `/deployments/:id/delete` | то же | `202`, статус `DELETING` — из любого, кроме `DELETING` и `DELETED` |
+
+Коды: `DEPLOYMENT_NOT_FOUND` (404); `DEPLOYMENT_OPERATION_IN_PROGRESS` (идёт другая операция — дождаться),
+`DEPLOYMENT_INVALID_STATE`, `DEPLOYMENT_VERSION_CONFLICT`, `IDEMPOTENCY_CONFLICT` (409); `DEPLOYMENT_INVALID_CONFIG`
+(пути полей без значений), `DEPLOYMENT_CUSTOMER_UNAVAILABLE`, `DEPLOYMENT_DESTINATION_UNAVAILABLE`,
+`DEPLOYMENT_TEMPLATE_UNAVAILABLE` (422); `IDEMPOTENCY_KEY_REQUIRED` (400).
+
+Клиента с неудалёнными развёртываниями архивировать нельзя: `409 CUSTOMER_HAS_DEPLOYMENTS`.
+
 ## Журнал
 
 - 2026-11-24 — служебные ручки health.
@@ -112,3 +140,4 @@
 - 2026-11-24 — лимит входов (`429 LOGIN_THROTTLED`, `503 LOGIN_BUSY`), публичный выход, `INVALID_JSON`, ключ от 16 символов.
 - 2026-11-24 — каталог роботов и клиенты.
 - 2026-11-24 — счёт обязателен при смене режима, смена счёта боевого клиента — с подтверждением.
+- 2026-11-24 — развёртывания и операции, `Idempotency-Key`, `CUSTOMER_HAS_DEPLOYMENTS`.

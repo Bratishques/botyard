@@ -1,7 +1,7 @@
 import { lstat, readdir, readFile, realpath } from 'node:fs/promises'
 import path from 'node:path'
 import Ajv2020, { type ValidateFunction } from 'ajv/dist/2020'
-import addFormats from 'ajv-formats'
+import { configSchemaValidator } from '../../../shared/catalog/config-validator'
 import { CatalogError, CatalogErrorCode, type CatalogSource, type TemplateManifest, type TemplateSource } from '../domain/catalog'
 import { checkTemplate } from './template-variables'
 
@@ -115,17 +115,6 @@ export class FilesystemCatalogSource implements CatalogSource {
     const { $schema: _schema, ...manifest } = raw
     return { manifest, files }
   }
-}
-
-/**
- * Валидатор схем конфига: строгий режим и стандартные форматы (`uri`, `email`, `date-time`…) — тот же набор
- * потом проверяет конфиг развёртывания, поэтому формат из схемы не окажется «неизвестным» в одном месте и
- * рабочим в другом.
- */
-export function configSchemaValidator(): Ajv2020 {
-  const ajv = new Ajv2020({ strict: true, allErrors: true })
-  addFormats(ajv)
-  return ajv
 }
 
 /** Обычный файл или папка, не симлинк: симлинк из публичного репозитория может вести куда угодно */

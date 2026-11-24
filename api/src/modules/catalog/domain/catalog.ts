@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto'
 import type { TemplateManifest } from '../../../shared/catalog/template-manifest'
+import { canonicalJson } from '../../../shared/json/canonical-json'
 
 /**
  * Каталог роботов. Источник — манифесты в репозитории `bots` (bots/schema/template.schema.json).
@@ -57,18 +58,6 @@ export function templateVersion(source: TemplateSource): string {
     .digest('hex')
 }
 
-export function canonicalJson(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`
-  if (value !== null && typeof value === 'object') {
-    const entries = Object.entries(value as Record<string, unknown>)
-      .filter(([, item]) => item !== undefined)
-      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
-    return `{${entries.map(([key, item]) => `${JSON.stringify(key)}:${canonicalJson(item)}`).join(',')}}`
-  }
-
-  return JSON.stringify(value)
-}
-
 /** Хранилище каталога */
 export interface CatalogRepository {
   /** Вставить версию, если её нет; `true` — вставлена этим вызовом */
@@ -92,3 +81,5 @@ export const CATALOG_REPOSITORY = Symbol('CATALOG_REPOSITORY')
 export interface CatalogSource {
   read(): Promise<TemplateSource[]>
 }
+
+export { canonicalJson }

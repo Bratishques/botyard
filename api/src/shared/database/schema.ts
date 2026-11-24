@@ -13,6 +13,10 @@ export interface Database {
   customer: CustomerTable
   bot_template: BotTemplateTable
   bot_template_version: BotTemplateVersionTable
+  bot_deployment: BotDeploymentTable
+  operation: OperationTable
+  outbox_message: OutboxMessageTable
+  idempotency_record: IdempotencyRecordTable
 }
 
 type CreatedAt = ColumnType<Date, Date | undefined, never>
@@ -88,4 +92,56 @@ export interface BotTemplateVersionTable {
   manifest: ColumnType<TemplateManifest, string, never>
   files: ColumnType<Record<string, string>, string | undefined, never>
   loaded_at: CreatedAt
+}
+
+export type DeploymentStatus = 'PROVISIONING' | 'RUNNING' | 'STOPPED' | 'FAILED' | 'DELETING' | 'DELETED'
+export type OperationKind = 'PROVISION' | 'START' | 'STOP' | 'REDEPLOY' | 'DELETE'
+export type OperationStatus = 'PENDING' | 'RUNNING' | 'SUCCEEDED' | 'FAILED'
+
+export interface BotDeploymentTable {
+  id: string
+  customer_id: string
+  destination_id: string
+  template_id: string
+  template_version: string
+  config: ColumnType<Record<string, unknown>, string, never>
+  app_name: string
+  status: DeploymentStatus
+  dokploy_app_id: string | null
+  active_operation_id: string | null
+  last_error: string | null
+  version: Generated<number>
+  created_at: CreatedAt
+  updated_at: UpdatedAt
+}
+
+export interface OperationTable {
+  id: string
+  deployment_id: string
+  kind: OperationKind
+  status: Generated<OperationStatus>
+  step: string | null
+  attempt: Generated<number>
+  error: string | null
+  requested_by: string
+  created_at: CreatedAt
+  updated_at: UpdatedAt
+  finished_at: Date | null
+}
+
+export interface OutboxMessageTable {
+  id: string
+  topic: string
+  payload: ColumnType<Record<string, unknown>, string, never>
+  created_at: CreatedAt
+  published_at: Date | null
+}
+
+export interface IdempotencyRecordTable {
+  scope: string
+  key: string
+  request_hash: string
+  status_code: number
+  response: ColumnType<unknown, string, string>
+  created_at: CreatedAt
 }

@@ -159,7 +159,15 @@ export class CustomerUseCases {
     if (current.status === CustomerStatus.ARCHIVED && version <= current.version) return current
     if (current.version !== version) throw versionConflict(id)
 
-    return this.write(id, version, { status: CustomerStatus.ARCHIVED }, actor, 'customer.archived', {})
+    // Клиент под FOR UPDATE: создание развёртывания держит его под FOR SHARE, и они не проскочат друг мимо
+    // друга. Архивный клиент с живыми роботами потерял бы управление ими — сначала их удаляют
+    return this.unitOfWork.run(async () => {
+      if (await this.repository.hasLiveDeployments(id)) {
+        throw new CustomerError(CustomerErrorCode.HAS_DEPLOYMENTS, 'delete the customer deployments before archiving')
+      }
+
+      return this.write(id, version, { status: CustomerStatus.ARCHIVED }, actor, 'customer.archived', {})
+    })
   }
 
   /** Клиент для изменения: существует, не в архиве, версия совпадает */

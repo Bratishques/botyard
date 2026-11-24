@@ -42,7 +42,8 @@ beforeEach(async () => {
   dir = await mkdtemp(path.join(tmpdir(), 'botyard-catalog-'))
   await cp(BOTS, dir, { recursive: true })
   // Тесты каталога начинают с пустого каталога; TRUNCATE версий триггер неизменности не запрещает (он на строки)
-  await sql`TRUNCATE bot_template_version, bot_template`.execute(db)
+  // CASCADE: на версии ссылаются развёртывания других тестов; каждый файл тестов заводит свои данные сам
+  await sql`TRUNCATE bot_template_version, bot_template CASCADE`.execute(db)
 })
 
 afterEach(async () => {

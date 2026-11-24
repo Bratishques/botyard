@@ -258,6 +258,19 @@ describe('вход', () => {
   })
 })
 
+describe('развёртывания по HTTP', () => {
+  test('изменяющий запрос без Idempotency-Key — 400, до любой записи', async () => {
+    const cookie = await session()
+    const response = await fetch(
+      `${base}/deployments`,
+      json({ customerId: crypto.randomUUID(), destinationId: crypto.randomUUID(), templateId: 'bita', config: {} }, cookie),
+    )
+
+    expect(response.status).toBe(400)
+    expect(((await response.json()) as { code: string }).code).toBe('IDEMPOTENCY_KEY_REQUIRED')
+  })
+})
+
 describe('назначения по HTTP', () => {
   test('создание, чтение и правка: ключ не возвращается, старая версия — 409', async () => {
     const cookie = await session()

@@ -69,6 +69,7 @@ const STATUS: Record<CustomerErrorCode, number> = {
   [CustomerErrorCode.VERSION_CONFLICT]: HttpStatus.CONFLICT,
   [CustomerErrorCode.ALREADY_IN_MODE]: HttpStatus.CONFLICT,
   [CustomerErrorCode.ARCHIVED]: HttpStatus.CONFLICT,
+  [CustomerErrorCode.HAS_DEPLOYMENTS]: HttpStatus.CONFLICT,
   [CustomerErrorCode.INVALID_NAME]: HttpStatus.BAD_REQUEST,
   [CustomerErrorCode.INVALID_ACCOUNT]: HttpStatus.BAD_REQUEST,
   [CustomerErrorCode.LIVE_CONFIRMATION_REQUIRED]: HttpStatus.UNPROCESSABLE_ENTITY,
