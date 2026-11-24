@@ -128,11 +128,7 @@ const RECONCILE_INTERVAL_MS = 30_000
 
 async function startReconciler(config: AppConfig): Promise<void> {
   const logger = createProcessLogger(config, 'reconciler')
-  const app = await NestFactory.createApplicationContext(AppModule.forRoot(config), { bufferLogs: true })
-  app.useLogger(app.get(Logger))
-  const operations = app.get(OperationReconciler)
-  const housekeeping = app.get(Housekeeping)
-
+  // Сигналы — до старта приложения: SIGTERM во время инициализации завершает процесс штатно, а не убивает его
   let stopping = false
   let wake: () => void = () => {}
   const stop = () => {
@@ -142,17 +138,35 @@ async function startReconciler(config: AppConfig): Promise<void> {
   process.once('SIGTERM', stop)
   process.once('SIGINT', stop)
 
+  const app = await NestFactory.createApplicationContext(AppModule.forRoot(config), { bufferLogs: true })
+  app.useLogger(app.get(Logger))
+  const operations = app.get(OperationReconciler)
+  const housekeeping = app.get(Housekeeping)
+  logger.info({ intervalMs: RECONCILE_INTERVAL_MS }, 'reconciler started')
+
   while (!stopping) {
+    // Две независимые части прохода: сбой одной не отменяет другую
     try {
       const woken = await operations.tick()
-      const purged = await housekeeping.tick()
-      if (woken.kicked + woken.abandoned + purged.outbox + purged.idempotency > 0) logger.info({ ...woken, purged }, 'reconciler pass')
+      if (woken.kicked + woken.abandoned > 0) logger.info(woken, 'stalled operations reconciled')
     } catch (error) {
-      logger.error({ err: error }, 'reconciler pass failed')
+      logger.error({ err: error }, 'reconciling operations failed')
     }
+    try {
+      const purged = await housekeeping.tick()
+      if (purged.outbox + purged.idempotency > 0) logger.info({ purged }, 'service tables purged')
+    } catch (error) {
+      logger.error({ err: error }, 'housekeeping failed')
+    }
+    // Пауза до следующего прохода; SIGTERM обрывает её сразу — иначе таймер держал бы процесс до 30 с,
+    // а оркестратор через 10 с прибивает его SIGKILL
     await new Promise<void>((resolve) => {
-      wake = resolve
-      setTimeout(resolve, RECONCILE_INTERVAL_MS)
+      const timer = setTimeout(resolve, RECONCILE_INTERVAL_MS)
+      wake = () => {
+        clearTimeout(timer)
+        resolve()
+      }
+      if (stopping) wake()
     })
   }
   logger.info('reconciler stopped')

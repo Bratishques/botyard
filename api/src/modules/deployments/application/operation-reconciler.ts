@@ -5,7 +5,7 @@ import { UnitOfWork } from '../../../shared/database/unit-of-work'
 import { registry } from '../../../shared/observability/metrics'
 import { Outbox, OutboxTopic } from '../../../shared/outbox/outbox'
 import { OPERATION_STORE, type OperationStore, type StalledOperation } from '../domain/operation-store'
-import { OUTCOME } from '../domain/saga'
+import { OUTCOME, OUTCOME_IN_DOKPLOY } from '../domain/saga'
 
 const kicked = new Counter({
   name: 'botyard_reconciler_operations_kicked_total',
@@ -36,6 +36,10 @@ const ACTOR = 'system:reconciler'
  * воркер упал так, что повтор не запланирован), и будит их; после `maxKicks` пинков без прогресса — закрывает
  * как FAILED и снимает захват с развёртывания, чтобы оператор не застрял с 409 навсегда.
  *
+ * - Операция, чья команда ещё лежит в outbox неопубликованной, не застряла — она в заторе (relay стоит).
+ * - На шагах, где деплой уже идёт в Dokploy, reconciler не сдаётся: FAILED соврал бы, робот запустится.
+ *   Такие операции он только будит, конец им кладёт дедлайн деплоя в воркере.
+ *
  * - Пинок — условная запись с новой меткой пробуждения и командой в outbox в одной транзакции: старая команда,
  *   если всё-таки доедет, устареет, и двух цепочек не будет.
  * - Конкурентно с воркером безопасно: захват шага обновляет `updated_at` и ставит аренду — пинок тогда не
@@ -57,7 +61,7 @@ export class OperationReconciler {
   async tick(): Promise<{ kicked: number; abandoned: number }> {
     const result = { kicked: 0, abandoned: 0 }
     for (const stalled of await this.store.stalled(RECONCILE.idleMs, RECONCILE.batch)) {
-      if (stalled.kicks >= RECONCILE.maxKicks) {
+      if (stalled.kicks >= RECONCILE.maxKicks && !OUTCOME_IN_DOKPLOY.has(stalled.step)) {
         if (await this.giveUp(stalled)) result.abandoned++
       } else if (await this.wake(stalled)) {
         result.kicked++
@@ -87,7 +91,9 @@ export class OperationReconciler {
   }
 
   private giveUp(stalled: StalledOperation): Promise<boolean> {
-    const error = `the operation made no progress on step ${stalled.step} after ${stalled.kicks} restarts`
+    const error =
+      `the operation made no progress on step ${stalled.step} after ${stalled.kicks} restarts ` +
+      '(check that the saga worker and the outbox relay are running); the robot was not touched by this decision'
 
     return this.unitOfWork.run(async () => {
       const done = await this.store.abandon(

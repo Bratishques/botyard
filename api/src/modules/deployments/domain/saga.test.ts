@@ -23,5 +23,7 @@ describe('сага', () => {
     expect(retryDelayMs(30, () => 1)).toBe(RETRY.maxDelayMs)
     expect(retryDelayMs(3, () => 0)).toBe(0)
     expect(retryDelayMs(1, () => 0, 42_000)).toBe(42_000)
+    // Retry-After длиннее потолка — потолок: иначе reconciler принял бы законную паузу за зависание
+    expect(retryDelayMs(1, () => 0, 15 * 60_000)).toBe(RETRY.maxDelayMs)
   })
 })

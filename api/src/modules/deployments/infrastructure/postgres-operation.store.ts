@@ -94,7 +94,9 @@ export class PostgresOperationStore implements OperationStore {
     const released = await this.held(claimed)
       .set({
         lease_until: null,
-        context: JSON.stringify({ ...context, wakeNonce: wake }),
+        // Счётчик пинков — из строки, а не из снимка воркера: опоздавший воркер не должен его стереть
+        context: sql<string>`${JSON.stringify({ ...context, wakeNonce: wake })}::jsonb
+          || CASE WHEN operation.context ? 'kicks' THEN jsonb_build_object('kicks', operation.context->'kicks') ELSE '{}'::jsonb END`,
         updated_at: sql<Date>`now()`,
         ...(options.resetAttempts && { attempt: 0 }),
       })
@@ -143,6 +145,18 @@ export class PostgresOperationStore implements OperationStore {
       .where('status', 'in', ['PENDING', 'RUNNING'])
       .where((where) => where.or([where('lease_until', 'is', null), where('lease_until', '<', sql<Date>`now()`)]))
       .where('updated_at', '<', sql<Date>`now() - make_interval(secs => ${idleMs / 1000})`)
+      // Команда ещё лежит в outbox (relay стоит или публикация отложена) — не потеряна, а в заторе:
+      // будить нечего, лишний пинок только добавил бы ещё одну команду в тот же затор
+      .where(({ not, exists, selectFrom }) =>
+        not(
+          exists(
+            selectFrom('outbox_message')
+              .select(sql`1`.as('one'))
+              .where('published_at', 'is', null)
+              .whereRef(sql`outbox_message.payload->>'operationId'`, '=', sql`operation.id::text`),
+          ),
+        ),
+      )
       .orderBy('updated_at')
       .limit(limit)
       .execute()

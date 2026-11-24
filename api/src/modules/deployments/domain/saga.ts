@@ -52,6 +52,13 @@ export const OUTCOME: Readonly<Record<OperationKind, { readonly succeeded: Deplo
 }
 
 /**
+ * Шаги, после которых в Dokploy уже идёт деплой: исход решает Dokploy, и закрыть такую операцию как FAILED
+ * значило бы соврать — робот соберётся и запустится. Reconciler их будит, но не закрывает; конец им кладёт
+ * дедлайн деплоя в воркере (RETRY.deployDeadlineMs)
+ */
+export const OUTCOME_IN_DOKPLOY: ReadonlySet<SagaStep> = new Set([SagaStep.DEPLOY, SagaStep.AWAIT_DEPLOY])
+
+/**
  * Шаги, которым нужно включённое назначение: всё, что ведёт к запуску робота, до самого запуска. После
  * `deploy` деплой уже идёт в Dokploy — отказ на `await_deploy` назвал бы операцию упавшей, а робот бы
  * запустился. Остановка и удаление разрешены на выключенном назначении всегда.
@@ -107,10 +114,13 @@ export const RETRY = {
   deployDeadlineMs: 30 * 60_000,
 } as const
 
-/** Пауза перед повтором: экспонента с полным jitter, не меньше Retry-After */
+/**
+ * Пауза перед повтором: экспонента с полным jitter, не меньше Retry-After — но не больше `maxDelayMs`. Длиннее
+ * пауз не бывает: на этом держится порог reconciler'а (операция без движения дольше него — застряла)
+ */
 export function retryDelayMs(attempt: number, random: () => number = Math.random, retryAfterMs?: number): number {
   const ceiling = Math.min(RETRY.maxDelayMs, RETRY.baseMs * 2 ** Math.max(0, attempt - 1))
   const jittered = Math.round(random() * ceiling)
 
-  return Math.max(jittered, retryAfterMs ?? 0)
+  return Math.min(RETRY.maxDelayMs, Math.max(jittered, retryAfterMs ?? 0))
 }

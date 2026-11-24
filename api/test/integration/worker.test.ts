@@ -737,6 +737,60 @@ describe('reconciler застрявших операций', () => {
     expect(await store.abandon(stalled, { operation: 'FAILED', error: 'late', deploymentStatus: 'FAILED' }, 10 * 60_000)).toBe(false)
   })
 
+  test('команда в заторе outbox (relay стоит) — операция не застряла, не будится', async () => {
+    const { operation } = await provision()
+    // Команда не потеряна: лежит неопубликованной, операция давно без движения
+    await sql`UPDATE operation SET updated_at = now() - interval '40 minutes' WHERE id = ${operation.id}`.execute(db)
+
+    await reconciler.tick()
+
+    expect(await pending(operation.id)).toHaveLength(1)
+    const row = await db.selectFrom('operation').select('context').where('id', '=', operation.id).executeTakeFirstOrThrow()
+    expect(row.context).not.toHaveProperty('kicks')
+  })
+
+  test('деплой уже идёт в Dokploy — после всех пинков не FAILED, а снова пинок', async () => {
+    const { deployment, operation } = await provision()
+    await loseCommand(operation.id)
+    await sql`UPDATE operation SET step = 'await_deploy', context = '{"kicks": 3, "baselineDeploymentId": null, "deployRequestedAt": "2026-11-24T00:00:00Z"}'::jsonb WHERE id = ${operation.id}`.execute(
+      db,
+    )
+
+    const result = await reconciler.tick()
+
+    expect(result.abandoned).toBe(0)
+    expect((await state(deployment.id, operation.id)).operation.status).not.toBe('FAILED')
+    expect((await pending(operation.id)).map((item) => item.message.step)).toEqual(['await_deploy'])
+  })
+
+  test('опоздавший release воркера не стирает счётчик пинков', async () => {
+    const { operation } = await provision()
+    const claimed = await store.claim(operation.id, 'ensure_app', null, 60_000)
+    if ('reason' in claimed) throw new Error('not claimed')
+    await sql`UPDATE operation SET context = context || '{"kicks": 2}'::jsonb WHERE id = ${operation.id}`.execute(db)
+
+    expect(await store.release(claimed, { ...claimed.context }, 'wake-x', { resetAttempts: false })).toBe(true)
+
+    const row = await db.selectFrom('operation').select('context').where('id', '=', operation.id).executeTakeFirstOrThrow()
+    expect(row.context).toMatchObject({ kicks: 2, wakeNonce: 'wake-x' })
+  })
+
+  test('гонка: воркер отпустил шаг на повтор между чтением и пинком — пинок не перебивает его паузу', async () => {
+    const { operation } = await provision()
+    await loseCommand(operation.id)
+    const [stalled] = (await store.stalled(10 * 60_000, 500)).filter((item) => item.operationId === operation.id)
+    if (!stalled) throw new Error('not stalled')
+
+    // Воркер взял шаг и тут же отпустил его на повтор с паузой: аренды нет, пинков столько же, но движение свежее
+    const claimed = await store.claim(operation.id, 'ensure_app', null, 60_000)
+    if ('reason' in claimed) throw new Error('not claimed')
+    expect(await store.release(claimed, {}, 'worker-wake', { resetAttempts: false })).toBe(true)
+
+    expect(await store.kick(stalled, 'late-wake', 10 * 60_000)).toBe(false)
+    const row = await db.selectFrom('operation').select('context').where('id', '=', operation.id).executeTakeFirstOrThrow()
+    expect(row.context).toMatchObject({ wakeNonce: 'worker-wake' })
+  })
+
   test('два reconciler одновременно — одна операция будится один раз', async () => {
     const { operation } = await provision()
     await loseCommand(operation.id)
