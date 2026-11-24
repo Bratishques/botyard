@@ -4,6 +4,7 @@ import type { NestExpressApplication } from '@nestjs/platform-express'
 import { Logger } from 'nestjs-pino'
 import { AppModule } from './app.module'
 import { type AppConfig, loadConfig, ProcessRole } from './shared/config/config'
+import { HttpExceptionFilter } from './shared/http/http-exception.filter'
 
 /**
  * Один образ — несколько процессов. Роль выбирается окружением, чтобы http, воркер саги, relay
@@ -24,6 +25,7 @@ export async function createHttpApp(config: AppConfig): Promise<NestExpressAppli
   const app = await NestFactory.create<NestExpressApplication>(AppModule.forRoot(config), { bufferLogs: true })
   app.useLogger(app.get(Logger))
   app.disable('x-powered-by')
+  app.useGlobalFilters(new HttpExceptionFilter())
   app.enableShutdownHooks()
 
   return app
