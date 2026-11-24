@@ -109,7 +109,9 @@ export class OperationWorker {
     }
     const { destination, apiKey } = await this.destinations.connection(deployment.destinationId)
     secrets.push(apiKey)
-    if (destination.status === 'DISABLED' && NEEDS_ACTIVE_DESTINATION.has(claimed.step)) {
+    // deploy проверяет выключение сам: сначала — не запущен ли уже наш деплой прошлой попыткой
+    const disabled = destination.status === 'DISABLED'
+    if (disabled && NEEDS_ACTIVE_DESTINATION.has(claimed.step) && claimed.step !== SagaStep.DEPLOY) {
       throw new StepFailure('the destination is disabled')
     }
     const target: PlatformTarget = {
@@ -131,7 +133,7 @@ export class OperationWorker {
         return { type: 'next', context: { ...context, baselineDeploymentId: latest?.id ?? null } }
       }
       case SagaStep.DEPLOY:
-        return this.deploy(target, deployment, context)
+        return this.deploy(target, deployment, context, disabled)
       case SagaStep.AWAIT_DEPLOY:
         return this.awaitDeploy(target, deployment, context)
       case SagaStep.START:
@@ -197,13 +199,15 @@ export class OperationWorker {
   }
 
   /** Запуск деплоя. Новый деплой после запомненного уже есть — прошлая попытка его запустила, второй не нужен */
-  private async deploy(target: PlatformTarget, deployment: Deployment, context: Context): Promise<StepOutcome> {
+  private async deploy(target: PlatformTarget, deployment: Deployment, context: Context, disabled: boolean): Promise<StepOutcome> {
     if (!('baselineDeploymentId' in context)) throw new StepFailure('deploy step without a baseline')
     const appId = appIdOf(deployment)
     const latest = await this.platform.latestDeployment(target, appId)
     if (latest && latest.id !== context.baselineDeploymentId) {
       return { type: 'next', context: { ...context, deployRequestedAt: context.deployRequestedAt ?? new Date().toISOString() } }
     }
+    // Деплой ещё не запущен — на выключенном назначении и не запустится
+    if (disabled) throw new StepFailure('the destination is disabled')
 
     await this.platform.deploy(target, appId)
     return { type: 'next', context: { ...context, deployRequestedAt: new Date().toISOString() } }

@@ -601,6 +601,26 @@ describe('воркер саги: гонки и повторная доставк
     expect(result.operation.error).toContain('still present after delete')
   })
 
+  test('ответ на deploy потерян, затем назначение выключили — повтор видит запущенный деплой и доводит до конца', async () => {
+    const platform = new FakePlatform()
+    platform.loseAnswer.add('deploy')
+    const { deployment, operation, target } = await provision()
+    const worker = workerWith(platform)
+    for (;;) {
+      const [next] = await pending(operation.id)
+      if (!next) throw new Error('no command')
+      await db.updateTable('outbox_message').set({ published_at: new Date() }).where('id', '=', next.id).execute()
+      await worker.handle(next.message)
+      if (next.message.step === 'deploy') break
+    }
+
+    await db.updateTable('destination').set({ status: 'DISABLED' }).where('id', '=', target.id).execute()
+    await drive(worker, operation.id)
+
+    expect(platform.calls.filter((call) => call === 'deploy')).toHaveLength(1)
+    expect((await state(deployment.id, operation.id)).deployment.status).toBe('RUNNING')
+  })
+
   test('удаление находит и приложение, созданное без ответа (по appName), — удаляются оба следа', async () => {
     const platform = new FakePlatform()
     const { deployment, version } = await running(platform)

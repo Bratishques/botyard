@@ -106,6 +106,7 @@ export class DokployClient {
         await response.body?.cancel()
       },
       options.timeoutIsNotFailure ? (error) => isTargetFailure(error) && !isTimeout(error) : isTargetFailure,
+      options.timeoutIsNotFailure ? isTimeout : undefined,
     )
   }
 
@@ -144,8 +145,9 @@ export class DokployClient {
     method: string,
     work: () => Promise<T>,
     countsAgainstTarget: (error: unknown) => boolean = isTargetFailure,
+    isNeutral?: (error: unknown) => boolean,
   ): Promise<T> {
-    return this.breakerFor(target.baseUrl).run(work, countsAgainstTarget).catch(wrapCircuitOpen(method))
+    return this.breakerFor(target.baseUrl).run(work, countsAgainstTarget, isNeutral).catch(wrapCircuitOpen(method))
   }
 
   private async post(target: DokployTarget, method: string, body: Record<string, unknown>, options: CallOptions): Promise<Response> {

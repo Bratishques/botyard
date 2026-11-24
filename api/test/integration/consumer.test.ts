@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, test } from 'bun:test'
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from 'bun:test'
 import type { StepMessage } from '../../src/modules/deployments/application/operation-worker'
 import { OperationStepConsumer } from '../../src/modules/deployments/presentation/operation-step.consumer'
 import { loadConfig } from '../../src/shared/config/config'
@@ -8,6 +8,14 @@ import { type Broker, connectBroker, OPERATION_STEP_QUEUE } from '../../src/shar
 const url = loadConfig().RABBITMQ_URL ?? ''
 const silent = { warn: () => undefined, error: () => undefined }
 let publisher: Broker
+/** Соединения тестов: упавший тест не должен оставить потребителя, который съест сообщения следующего */
+const opened: Broker[] = []
+
+async function broker(): Promise<Broker> {
+  const connected = await connectBroker(url)
+  opened.push(connected)
+  return connected
+}
 
 beforeAll(async () => {
   publisher = await connectBroker(url)
@@ -21,6 +29,10 @@ beforeEach(async () => {
   await publisher.channel.purgeQueue(OPERATION_STEP_QUEUE)
 })
 
+afterEach(async () => {
+  for (const connected of opened.splice(0)) await connected.close()
+})
+
 const message = (): StepMessage => ({
   operationId: crypto.randomUUID(),
   deploymentId: crypto.randomUUID(),
@@ -32,7 +44,7 @@ function publish(body: unknown): void {
   publisher.channel.sendToQueue(OPERATION_STEP_QUEUE, Buffer.from(typeof body === 'string' ? body : JSON.stringify(body)))
 }
 
-async function until(condition: () => boolean, timeoutMs = 8_000): Promise<void> {
+async function until(condition: () => boolean, timeoutMs = 4_000): Promise<void> {
   const deadline = Date.now() + timeoutMs
   while (!condition()) {
     if (Date.now() > deadline) throw new Error('condition not met in time')
@@ -42,7 +54,7 @@ async function until(condition: () => boolean, timeoutMs = 8_000): Promise<void>
 
 describe('потребитель operation.step', () => {
   test('подтверждение — после обработки: упавший посреди шага процесс не теряет сообщение', async () => {
-    const first = await connectBroker(url)
+    const first = await broker()
     let started = false
     const hanging = new OperationStepConsumer(
       first,
@@ -61,22 +73,21 @@ describe('потребитель operation.step', () => {
 
     // Процесс умер, не подтвердив: RabbitMQ отдаёт сообщение другому воркеру
     await first.close()
-    const second = await connectBroker(url)
+    const second = await broker()
     const received: StepMessage[] = []
     const healthy = new OperationStepConsumer(second, { handle: async (step) => void received.push(step) }, silent)
     await healthy.start()
     await until(() => received.length === 1)
     await healthy.stop()
-    await second.close()
 
     expect(received).toEqual([sent])
-  })
+  }, 15_000)
 
   test('сбой обработки — сообщение возвращается в очередь и обрабатывается снова', async () => {
-    const broker = await connectBroker(url)
+    const consumerBroker = await broker()
     let calls = 0
     const consumer = new OperationStepConsumer(
-      broker,
+      consumerBroker,
       {
         handle: async () => {
           calls++
@@ -90,14 +101,13 @@ describe('потребитель operation.step', () => {
 
     await until(() => calls === 2)
     await consumer.stop()
-    await broker.close()
     expect(calls).toBe(2)
-  })
+  }, 15_000)
 
   test('сообщение не по схеме подтверждается и отбрасывается, воркер его не видит', async () => {
-    const broker = await connectBroker(url)
+    const consumerBroker = await broker()
     const received: StepMessage[] = []
-    const consumer = new OperationStepConsumer(broker, { handle: async (step) => void received.push(step) }, silent)
+    const consumer = new OperationStepConsumer(consumerBroker, { handle: async (step) => void received.push(step) }, silent)
     await consumer.start()
     publish('not json')
     publish({ operationId: 'not-a-uuid', step: 'ensure_app' })
@@ -106,9 +116,8 @@ describe('потребитель operation.step', () => {
 
     await until(() => received.length === 1)
     await consumer.stop()
-    const left = await broker.channel.checkQueue(OPERATION_STEP_QUEUE)
-    await broker.close()
+    const left = await consumerBroker.channel.checkQueue(OPERATION_STEP_QUEUE)
     expect(received).toEqual([valid])
     expect(left.messageCount).toBe(0)
-  })
+  }, 15_000)
 })
