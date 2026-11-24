@@ -1,0 +1,46 @@
+{
+  "$schema": "../../schema/template.schema.json",
+  "id": "bita",
+  "name": "BITA",
+  "description": "Робот на Go с тремя стратегиями: gamble (тренд), crumble (скользящие средние), tumble (стакан). Настраивается только переменными окружения.",
+  "upstream": {
+    "gitUrl": "https://github.com/elkopass/BITA.git",
+    "ref": "main",
+    "license": "Apache-2.0"
+  },
+  "build": {
+    "type": "dockerfile",
+    "dockerfile": "cmd/trade-bot/Dockerfile",
+    "context": "."
+  },
+  "config": {
+    "delivery": "env",
+    "schema": {
+      "type": "object",
+      "required": ["figi"],
+      "additionalProperties": false,
+      "properties": {
+        "figi": { "type": "array", "items": { "type": "string" }, "minItems": 1, "description": "Инструменты, FIGI" },
+        "strategy": { "enum": ["gamble", "crumble", "tumble"], "default": "gamble" },
+        "sellOnExit": { "type": "boolean", "default": false },
+        "logLevel": { "enum": ["DEBUG", "INFO", "WARN", "ERROR"], "default": "INFO" }
+      }
+    },
+    "env": {
+      "TRADEBOT_FIGI": "{{join config.figi \",\"}}",
+      "TRADEBOT_STRATEGY": "{{ config.strategy }}",
+      "TRADEBOT_SELL_ON_EXIT": "{{ config.sellOnExit }}",
+      "TRADEBOT_LOG_LEVEL": "{{ config.logLevel }}",
+      "TRADEBOT_IS_SANDBOX": "{{ customer.sandbox }}",
+      "TRADEBOT_TOKEN": "{{ secret.tinvestToken }}",
+      "TRADEBOT_ACCOUNT_ID": "{{ customer.accountId }}",
+      "METRICS_ENABLED": "true",
+      "METRICS_ADDR": ":8080"
+    }
+  },
+  "metrics": { "port": 8080, "path": "/metrics" },
+  "notes": [
+    "Адрес T-Invest API захардкожен в internal/config/config.go: invest-public-api.tinkoff.ru:443.",
+    "Последний коммит в upstream — май 2022, сборка на golang:1.18-alpine."
+  ]
+}
