@@ -48,11 +48,13 @@ admin ──► api ──► outbox ──► RabbitMQ ──► worker ──�
 - **Append-only аудит**, запрещённый на уровне базы (UPDATE, DELETE, TRUNCATE), CHECK-ограничения на инварианты.
 - **Маскирование секретов в логах** по имени поля и виду значения на любой глубине.
 - **Назначения** Dokploy с проверкой ключа и окружения; **вход операторов** (argon2id, сессии в базе, CSRF).
+- **Админка операторов** (React, TanStack): назначения, клиенты, каталог, развёртывания с формой конфига по JSON
+  Schema шаблона и историей операций; `Idempotency-Key` на попытку пользователя, ошибки по коду, без секретов в браузере.
 - Каркас api: конфиг с проверкой при старте, JSON-логи, health, метрики Prometheus, миграции, CI.
 
 **Дальше по плану**
 
-- Вебхуки Dokploy с inbox, логи роботов, админка, демо-стенд.
+- Вебхуки Dokploy с inbox, логи роботов, живой статус в админке по SSE, демо-стенд.
 
 ## Структура
 
@@ -60,7 +62,7 @@ admin ──► api ──► outbox ──► RabbitMQ ──► worker ──�
 |---|---|
 | [api](api) | бэкенд: NestJS 12 на Bun, Kysely + PostgreSQL 17, RabbitMQ; дизайн-документы в `api/docs` |
 | [packages/contract](packages/contract) | контракт админ-API: схемы запросов (zod) и формы ответов — общие для api и админки |
-| [admin](admin) | админка для операторов (React, Vite) — этап 4 |
+| [admin](admin) | админка для операторов: React 19, Vite, TanStack Router и Query, Tailwind; форма конфига робота по JSON Schema |
 | [bots](bots) | каталог роботов: манифесты для [BITA](https://github.com/elkopass/BITA) и [Contest Robot 2022](https://github.com/Antonboom/tinkoff-invest-robot-contest-2022) |
 | [infra](infra) | dev-окружение (Postgres, RabbitMQ, Redis) и установка Dokploy |
 
@@ -77,7 +79,10 @@ bun install                                            # в корне: все �
 cp api/.env.example api/.env                           # и задать SECRETS_MASTER_KEY: openssl rand -base64 32
 cd api && bun run migrate && bun run dev               # http://localhost:4000/health/ready
 cd .. && bun run check && bun run test:int             # линтер, типы и тесты всех пакетов через turbo
+cd admin && bun run dev                                # админка: http://localhost:5173, API через прокси /api
 ```
+
+Оператор для входа в админку — `bun run operator:create` в `api`.
 
 ## Дисклеймер
 

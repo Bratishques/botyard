@@ -55,8 +55,10 @@ jobs:
         with:
           bun-version-file: package.json
       - run: bun install --frozen-lockfile
-      # lint, typecheck и unit-тесты всех пакетов (api, packages/contract)
+      # lint, typecheck и unit-тесты всех пакетов (api, admin, packages/contract)
       - run: bun run check
+      # Сборка админки: typecheck не ловит поломки плагинов Vite и Tailwind
+      - run: bun run build
       # Интеграционные — без кеша: зависят от живых Postgres и RabbitMQ
       - run: bun run test:int
 
