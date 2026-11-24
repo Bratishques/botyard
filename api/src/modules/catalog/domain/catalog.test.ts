@@ -9,6 +9,7 @@ const source: TemplateSource = {
     upstream: { gitUrl: 'https://github.com/elkopass/BITA.git', ref: 'main', license: 'Apache-2.0' },
     build: { type: 'dockerfile', dockerfile: 'cmd/trade-bot/Dockerfile', context: '.' },
     config: { delivery: 'env', schema: { type: 'object' }, env: { A: '1' } },
+    security: { verifiesTls: true },
   },
   files: {},
 }

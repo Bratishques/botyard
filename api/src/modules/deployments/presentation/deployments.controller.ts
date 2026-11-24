@@ -105,6 +105,7 @@ const STATUS: Record<DeploymentErrorCode, number> = {
   [DeploymentErrorCode.CUSTOMER_UNAVAILABLE]: HttpStatus.UNPROCESSABLE_ENTITY,
   [DeploymentErrorCode.DESTINATION_UNAVAILABLE]: HttpStatus.UNPROCESSABLE_ENTITY,
   [DeploymentErrorCode.TEMPLATE_UNAVAILABLE]: HttpStatus.UNPROCESSABLE_ENTITY,
+  [DeploymentErrorCode.TEMPLATE_NOT_LIVE_SAFE]: HttpStatus.UNPROCESSABLE_ENTITY,
 }
 
 async function http<T>(work: Promise<T>): Promise<T> {

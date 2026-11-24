@@ -54,8 +54,15 @@ export class CircuitBreaker {
   /**
    * `countsAsFailure` решает, что считать отказом адресата. Ответ «неверный ключ» — это отказ
    * вызывающего, а не адресата: из-за него цепь размыкаться не должна.
+   *
+   * `isNeutral` — исход, который ничего не говорит о здоровье адресата (таймаут вызова, который по своей
+   * природе ждёт долго): цепь не размыкается и не замыкается, пробный слот half-open освобождается.
    */
-  async run<T>(call: () => Promise<T>, countsAsFailure: (error: unknown) => boolean): Promise<T> {
+  async run<T>(
+    call: () => Promise<T>,
+    countsAsFailure: (error: unknown) => boolean,
+    isNeutral: (error: unknown) => boolean = () => false,
+  ): Promise<T> {
     this.admit()
     const admittedIn = this.generation
     try {
@@ -65,7 +72,9 @@ export class CircuitBreaker {
     } catch (error) {
       if (admittedIn === this.generation) {
         if (countsAsFailure(error)) this.recordFailure()
-        else if (this.state.kind === 'half-open') this.transition({ kind: 'closed', failures: 0 })
+        else if (isNeutral(error)) {
+          if (this.state.kind === 'half-open') this.state.probing = false
+        } else if (this.state.kind === 'half-open') this.transition({ kind: 'closed', failures: 0 })
       }
       throw error
     }

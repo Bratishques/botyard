@@ -67,7 +67,8 @@ export interface OperationRule {
 
 export const OPERATION_RULES: Readonly<Record<Exclude<OperationKind, 'PROVISION'>, OperationRule>> = {
   START: { from: ['STOPPED'], claimAs: null, requiresActiveDestination: true },
-  STOP: { from: ['RUNNING'], claimAs: null, requiresActiveDestination: false },
+  // Из FAILED тоже: упавший запуск мог оставить робота перезапускаться в цикле, остановить его можно всегда
+  STOP: { from: ['RUNNING', 'FAILED'], claimAs: null, requiresActiveDestination: false },
   REDEPLOY: { from: ['RUNNING', 'STOPPED', 'FAILED'], claimAs: null, requiresActiveDestination: true },
   DELETE: { from: ['PROVISIONING', 'RUNNING', 'STOPPED', 'FAILED', 'DELETING'], claimAs: 'DELETING', requiresActiveDestination: false },
 }
@@ -90,6 +91,7 @@ export const DeploymentErrorCode = {
   CUSTOMER_UNAVAILABLE: 'DEPLOYMENT_CUSTOMER_UNAVAILABLE',
   DESTINATION_UNAVAILABLE: 'DEPLOYMENT_DESTINATION_UNAVAILABLE',
   TEMPLATE_UNAVAILABLE: 'DEPLOYMENT_TEMPLATE_UNAVAILABLE',
+  TEMPLATE_NOT_LIVE_SAFE: 'DEPLOYMENT_TEMPLATE_NOT_LIVE_SAFE',
 } as const
 export type DeploymentErrorCode = (typeof DeploymentErrorCode)[keyof typeof DeploymentErrorCode]
 
@@ -113,6 +115,8 @@ export interface DeploymentBasis {
     readonly currentVersion: string
     readonly retired: boolean
     readonly configSchema: Record<string, unknown>
+    /** Проверяет ли робот сертификат T-Invest; нет — только песочница */
+    readonly verifiesTls: boolean
   } | null
 }
 

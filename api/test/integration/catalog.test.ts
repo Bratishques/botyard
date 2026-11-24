@@ -234,4 +234,25 @@ describe('синхронизация каталога', () => {
 
     await expect(sync()).rejects.toThrow('unknown variable "config.apiAddress"')
   })
+
+  test('шаблон не может занять имена платформы: SSL_CERT_FILE и папку корня сертификатов', async () => {
+    await setIn('bita', ['config', 'env', 'SSL_CERT_FILE'], '/tmp/evil.pem')
+    await expect(sync()).rejects.toThrow('SSL_CERT_FILE is set by the platform')
+
+    await setIn('bita', ['config', 'env', 'SSL_CERT_FILE'], undefined)
+    await setIn('contest-2022', ['config', 'mountPath'], '/etc/ssl/botyard/config.toml')
+    await expect(sync()).rejects.toThrow('/etc/ssl/botyard is used by the platform')
+  })
+
+  test('имя переменной env — только по шаблону: пробел или перевод строки в имени обошли бы резерв платформы', async () => {
+    await setIn('bita', ['config', 'env', 'SSL_CERT_DIR '], '/x')
+
+    await expect(sync()).rejects.toThrow('must match pattern')
+  })
+
+  test('манифест без security.verifiesTls отклоняется: автор робота обязан сказать, проверяет ли робот TLS', async () => {
+    await setIn('bita', ['security'], undefined)
+
+    await expect(sync()).rejects.toThrow("must have required property 'security'")
+  })
 })

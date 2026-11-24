@@ -88,6 +88,8 @@ const STATUS: Record<DestinationErrorCode, new (body: object) => HttpException> 
   [DestinationErrorCode.NAME_TAKEN]: ConflictException,
   [DestinationErrorCode.TARGET_TAKEN]: ConflictException,
   [DestinationErrorCode.VERSION_CONFLICT]: ConflictException,
+  [DestinationErrorCode.HAS_DEPLOYMENTS]: ConflictException,
+  [DestinationErrorCode.KEY_CANNOT_SEE_DEPLOYMENTS]: UnprocessableEntityException,
   [DestinationErrorCode.INVALID_URL]: BadRequestException,
   [DestinationErrorCode.INVALID_NAME]: BadRequestException,
   [DestinationErrorCode.INSECURE_URL]: BadRequestException,

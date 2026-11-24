@@ -16,6 +16,7 @@ import {
   type Operation,
   type OperationKind,
 } from '../domain/deployment'
+import { firstStep } from '../domain/saga'
 
 export interface CreateDeploymentInput {
   readonly customerId: string
@@ -65,6 +66,14 @@ export class DeploymentUseCases {
         throw new DeploymentError(DeploymentErrorCode.TEMPLATE_UNAVAILABLE, 'template is missing or retired')
       }
 
+      // Робот без проверки сертификата отдал бы боевой токен любому, кто встал посередине
+      if (!basis.customer.sandbox && !basis.template.verifiesTls) {
+        throw new DeploymentError(
+          DeploymentErrorCode.TEMPLATE_NOT_LIVE_SAFE,
+          'this robot does not verify the T-Invest certificate and runs only in the sandbox',
+        )
+      }
+
       const config = validateConfig(`${basis.template.id}@${basis.template.currentVersion}`, basis.template.configSchema, input.config)
       const id = Bun.randomUUIDv7()
       const operationId = Bun.randomUUIDv7()
@@ -83,7 +92,12 @@ export class DeploymentUseCases {
         activeOperationId: operationId,
       })
       const operation = await this.repository.insertOperation({ id: operationId, deploymentId: id, kind: 'PROVISION', requestedBy: actor })
-      await this.outbox.enqueue(OutboxTopic.OPERATION_STEP, { operationId, deploymentId: id, kind: 'PROVISION' })
+      await this.outbox.enqueue(OutboxTopic.OPERATION_STEP, {
+        operationId,
+        deploymentId: id,
+        kind: 'PROVISION',
+        step: firstStep('PROVISION'),
+      })
       await this.audit.record({
         actor,
         action: 'deployment.created',
@@ -127,7 +141,7 @@ export class DeploymentUseCases {
       }
 
       const operation = await this.repository.insertOperation({ id: operationId, deploymentId: id, kind, requestedBy: actor })
-      await this.outbox.enqueue(OutboxTopic.OPERATION_STEP, { operationId, deploymentId: id, kind })
+      await this.outbox.enqueue(OutboxTopic.OPERATION_STEP, { operationId, deploymentId: id, kind, step: firstStep(kind) })
       await this.audit.record({
         actor,
         action: `deployment.${kind.toLowerCase()}_requested`,

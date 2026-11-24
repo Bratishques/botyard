@@ -43,6 +43,13 @@ export class DestinationConflict extends Error {
  * условие не выполнено (её поменял кто-то другой или её нет).
  */
 export interface DestinationRepository {
+  /**
+   * Блокирует строку назначения (FOR UPDATE) и отвечает, есть ли на нём неудалённые развёртывания. Создание
+   * развёртывания держит назначение под FOR SHARE и не проскочит мимо
+   */
+  hasLiveDeployments(id: string): Promise<boolean>
+  /** Id приложений Dokploy неудалённых развёртываний назначения */
+  liveApplicationIds(id: string): Promise<string[]>
   insert(destination: NewDestination): Promise<Destination>
   findById(id: string): Promise<Destination | null>
   list(): Promise<Destination[]>
@@ -69,6 +76,11 @@ export const DESTINATION_REPOSITORY = Symbol('DESTINATION_REPOSITORY')
 export interface DokployCatalog {
   environments(baseUrl: string, apiKey: string): Promise<{ projectId: string; environmentId: string; name: string }[]>
   servers(baseUrl: string, apiKey: string): Promise<{ serverId: string; name: string }[]>
+  /**
+   * Id приложений окружения, которые видит этот ключ. Dokploy показывает пользователю только приложения,
+   * к которым у него есть доступ: ключ другого пользователя не увидит роботов, созданных прежним ключом
+   */
+  applicationIds(baseUrl: string, apiKey: string, environmentId: string): Promise<Set<string>>
 }
 
 export const DOKPLOY_CATALOG = Symbol('DOKPLOY_CATALOG')

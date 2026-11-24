@@ -68,6 +68,7 @@
       }
     }
   },
+  "security": { "verifiesTls": false },
   "metrics": {
     "port": 2112,
     "path": "/metrics"
@@ -76,6 +77,7 @@
     "Робот читает configs/config.toml относительно WORKDIR образа; файл приходит file mount'ом Dokploy вместе с токеном.",
     "Ключ [clients.tinkfoff_invest] с опечаткой — так в upstream, исправлять нельзя.",
     "Последний коммит в upstream — май 2022, сборка на golang:1.18-alpine.",
+    "TLS без проверки сертификата (cmd/trading-robot/main.go: InsecureSkipVerify) — только песочница, пока нет форка с проверкой.",
     "Адрес T-Invest API задаёт платформа по режиму клиента (`platform.tinvestAddress`), а не конфиг: боевой токен не должен уходить на адрес, введённый оператором."
   ]
 }
