@@ -82,6 +82,12 @@ const schema = z
     // Человекочитаемые логи для локальной разработки. pino-pretty — dev-зависимость
     LOG_PRETTY: flag,
     DATABASE_URL: z.url({ protocol: /^postgres(ql)?$/ }),
+    // Проверка токена и счёта клиента через T-Invest API. false — только разработка без сети и тесты:
+    // тогда клиенты создаются в песочнице без проверки, а боевой режим закрыт
+    TINVEST_VERIFY_TOKENS: z
+      .enum(['true', 'false'])
+      .default('true')
+      .transform((value) => value === 'true'),
     // Брокер нужен relay и воркеру; процесс http без него обходится
     RABBITMQ_URL: z.url({ protocol: /^amqps?$/ }).optional(),
     // http-адрес назначения: только для локальной разработки, ключ Dokploy по открытому каналу не уходит

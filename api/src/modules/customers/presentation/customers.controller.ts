@@ -73,6 +73,11 @@ const STATUS: Record<CustomerErrorCode, number> = {
   [CustomerErrorCode.INVALID_NAME]: HttpStatus.BAD_REQUEST,
   [CustomerErrorCode.INVALID_ACCOUNT]: HttpStatus.BAD_REQUEST,
   [CustomerErrorCode.LIVE_CONFIRMATION_REQUIRED]: HttpStatus.UNPROCESSABLE_ENTITY,
+  [CustomerErrorCode.TOKEN_REJECTED]: HttpStatus.UNPROCESSABLE_ENTITY,
+  [CustomerErrorCode.ACCOUNT_NOT_FOUND]: HttpStatus.UNPROCESSABLE_ENTITY,
+  [CustomerErrorCode.TOKEN_READ_ONLY]: HttpStatus.UNPROCESSABLE_ENTITY,
+  [CustomerErrorCode.LIVE_CHECK_DISABLED]: HttpStatus.CONFLICT,
+  [CustomerErrorCode.BROKER_UNAVAILABLE]: HttpStatus.SERVICE_UNAVAILABLE,
 }
 
 async function http<T>(work: Promise<T>): Promise<T> {

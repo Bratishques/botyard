@@ -359,6 +359,26 @@ describe('развёртывания по HTTP', () => {
   })
 })
 
+describe('клиенты по HTTP', () => {
+  test('проверка токенов выключена (тесты): боевой режим — 409 CUSTOMER_LIVE_CHECK_DISABLED, клиент в песочнице', async () => {
+    const cookie = await session()
+    const name = `live-${crypto.randomUUID().slice(0, 8)}`
+    const created = await fetch(
+      `${base}/customers`,
+      json({ name, accountId: 'sandbox-account', token: 't.sandbox-token-0123456789abcdef' }, cookie),
+    )
+    const customer = (await created.json()) as { id: string; version: number }
+
+    const live = await fetch(
+      `${base}/customers/${customer.id}/live`,
+      json({ version: customer.version, token: 't.live-token-0123456789abcdef', accountId: '2000000001', confirmName: name }, cookie),
+    )
+
+    expect(live.status).toBe(409)
+    expect(((await live.json()) as { code: string }).code).toBe('CUSTOMER_LIVE_CHECK_DISABLED')
+  })
+})
+
 describe('назначения по HTTP', () => {
   test('создание, чтение и правка: ключ не возвращается, старая версия — 409', async () => {
     const cookie = await session()

@@ -100,7 +100,7 @@
 |---|---|---|---|
 | GET | `/customers` | — | `200 Customer[]` |
 | GET | `/customers/:id` | — | `200 Customer`, `404 CUSTOMER_NOT_FOUND` |
-| POST | `/customers` | `{ name, accountId, token }` | `201 Customer` |
+| POST | `/customers` | `{ name, accountId, token }` | `201 Customer`; токен и счёт проверяются в песочнице T-Invest |
 | PATCH | `/customers/:id` | `{ version, name?, accountId?, confirmName? }` | `200 Customer`; смена счёта клиента в боевом режиме — только с `confirmName` (точное имя), иначе `422 CUSTOMER_LIVE_CONFIRMATION_REQUIRED` |
 | POST | `/customers/:id/token` | `{ version, token }` | `200 Customer` — новый токен того же режима |
 | POST | `/customers/:id/live` | `{ version, token, accountId, confirmName }` | `200 Customer`; боевой токен и боевой счёт (счета песочницы и боевые разные); `confirmName` — точное имя клиента, иначе `422 CUSTOMER_LIVE_CONFIRMATION_REQUIRED` |
@@ -109,6 +109,11 @@
 
 Коды: `CUSTOMER_NOT_FOUND` (404); `CUSTOMER_NAME_TAKEN`, `CUSTOMER_VERSION_CONFLICT`, `CUSTOMER_ALREADY_IN_MODE`,
 `CUSTOMER_ARCHIVED` (409); `CUSTOMER_INVALID_NAME`, `CUSTOMER_INVALID_ACCOUNT` (400); `CUSTOMER_LIVE_CONFIRMATION_REQUIRED` (422).
+
+Токен и счёт проверяются у T-Invest при создании, ротации токена, смене режима и смене счёта (в режиме клиента):
+`CUSTOMER_TOKEN_REJECTED` (токен не принят), `CUSTOMER_ACCOUNT_NOT_FOUND` (у токена нет такого открытого счёта),
+`CUSTOMER_TOKEN_READ_ONLY` (боевой токен «только чтение») — 422; `CUSTOMER_BROKER_UNAVAILABLE` — 503, повторить позже;
+`CUSTOMER_LIVE_CHECK_DISABLED` — 409, проверка выключена конфигурацией и боевой режим недоступен.
 
 ## Развёртывания
 
@@ -154,3 +159,5 @@ attempt, error, requestedBy, createdAt, finishedAt }`; `step` — текущий
   режима клиента с роботами, start/redeploy на выключенном назначении — 422, повтор удаления из `DELETING`.
 - 2026-11-24 — воркер саги: `step` операции, stop из `FAILED`, `DEPLOYMENT_TEMPLATE_NOT_LIVE_SAFE`;
   назначение с роботами: `DESTINATION_HAS_DEPLOYMENTS`, `DESTINATION_KEY_CANNOT_SEE_DEPLOYMENTS`.
+- 2026-11-24 — проверка токена и счёта у T-Invest: `CUSTOMER_TOKEN_REJECTED`, `CUSTOMER_ACCOUNT_NOT_FOUND`,
+  `CUSTOMER_TOKEN_READ_ONLY`, `CUSTOMER_BROKER_UNAVAILABLE`, `CUSTOMER_LIVE_CHECK_DISABLED`.

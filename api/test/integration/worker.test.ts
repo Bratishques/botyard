@@ -30,6 +30,7 @@ import { SecretBox } from '../../src/shared/crypto/secret-box'
 import { UnitOfWork } from '../../src/shared/database/unit-of-work'
 import { Outbox } from '../../src/shared/outbox/outbox'
 import { ROBOT_CA_MOUNT_PATH, TINVEST_ADDRESS } from '../../src/shared/tinvest/tinvest'
+import { FakeTradingAccounts } from './fakes'
 import { db } from './setup'
 
 const TOKEN = 't.sandbox-token-0123456789abcdef'
@@ -131,7 +132,7 @@ const audit = new AuditLog(unitOfWork)
 const box = new SecretBox([new LocalKeyEncryptionKey(1, randomBytes(32))])
 const outbox = new Outbox(unitOfWork)
 const store = new PostgresOperationStore(unitOfWork)
-const customers = new CustomerUseCases(new PostgresCustomerRepository(unitOfWork), box, unitOfWork, audit)
+const customers = new CustomerUseCases(new PostgresCustomerRepository(unitOfWork), box, unitOfWork, audit, new FakeTradingAccounts())
 const destinationSecrets = new DestinationSecrets(box)
 const unusedCatalog: DokployCatalog = {
   environments: async () => [],
