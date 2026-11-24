@@ -1,3 +1,4 @@
+import { isIP } from 'node:net'
 import { z } from 'zod'
 import { SecretValue } from './secret-value'
 
@@ -31,15 +32,31 @@ const masterKey = z
 const trustProxy = z
   .string()
   .default('false')
-  .refine((value) => value !== 'true', 'must not be true: set the number of proxy hops or trusted subnets')
+  .refine(isTrustProxy, 'must be false, a hop count (1-9) or a list of IPs/subnets no wider than /8; never true')
   .transform((value): false | number | string[] => {
     if (value === 'false') return false
-    if (/^\d{1,2}$/.test(value)) return Number(value)
-    return value
-      .split(',')
-      .map((part) => part.trim())
-      .filter(Boolean)
+    if (/^\d$/.test(value)) return Number(value)
+    return value.split(',').map((part) => part.trim())
   })
+
+/**
+ * Значение, которое express понимает однозначно. Мусор proxy-addr читает как адрес (`100` → 0.0.0.100) и
+ * молча перестаёт доверять кому-либо; подсети шире /8 почти равны `true`. Всё это отвергается при старте.
+ */
+function isTrustProxy(value: string): boolean {
+  if (value === 'false') return true
+  if (/^[1-9]$/.test(value)) return true
+
+  return value.split(',').every((part) => {
+    const [address = '', prefix, ...rest] = part.trim().split('/')
+    const family = isIP(address)
+    if (family === 0 || rest.length > 0) return false
+    if (prefix === undefined) return true
+    if (!/^\d{1,3}$/.test(prefix)) return false
+    const bits = Number(prefix)
+    return bits >= 8 && bits <= (family === 4 ? 32 : 128)
+  })
+}
 
 const flag = z
   .enum(['true', 'false'])
@@ -66,8 +83,8 @@ const schema = z
     DATABASE_URL: z.url({ protocol: /^postgres(ql)?$/ }),
     // http-адрес назначения: только для локальной разработки, ключ Dokploy по открытому каналу не уходит
     DESTINATIONS_ALLOW_HTTP: flag,
-    // Cookie сессии только по https. Выключается для локальной разработки по http
     TRUST_PROXY: trustProxy,
+    // Cookie сессии только по https. Выключается для локальной разработки по http
     SESSION_COOKIE_SECURE: z
       .enum(['true', 'false'])
       .default('true')

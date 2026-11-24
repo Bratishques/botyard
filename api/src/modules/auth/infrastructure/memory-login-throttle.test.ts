@@ -42,4 +42,22 @@ describe('MemoryLoginThrottle', () => {
 
     expect(throttle.tryAcquire(keys('a@x'), 60_000)).toBeNull()
   })
+
+  test('поток чужих ключей не вытесняет живую блокировку почты', () => {
+    const throttle = new MemoryLoginThrottle(rules, 50)
+    for (let i = 0; i < 3; i++) throttle.tryAcquire(['email:victim@x'], 0)
+    expect(throttle.tryAcquire(['email:victim@x'], 1)).not.toBeNull()
+
+    for (let i = 0; i < 500; i++) throttle.tryAcquire([`email:noise${i}@x`, `ip:10.1.${i >> 8}.${i & 255}`], 2)
+
+    expect(throttle.tryAcquire(['email:victim@x'], 3)).not.toBeNull()
+  })
+
+  test('карта, занятая одними блокировками, не пускает новую попытку, а не освобождает место', () => {
+    const throttle = new MemoryLoginThrottle(rules, 4)
+    for (const email of ['a', 'b', 'c', 'd']) for (let i = 0; i < 3; i++) throttle.tryAcquire([`email:${email}@x`], 0)
+
+    expect(throttle.tryAcquire(['email:new@x'], 1)).not.toBeNull()
+    expect(throttle.tryAcquire(['email:a@x'], 1)).not.toBeNull()
+  })
 })

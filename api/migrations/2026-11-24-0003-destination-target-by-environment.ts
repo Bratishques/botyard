@@ -9,7 +9,8 @@ import { type Kysely, sql } from 'kysely'
  *
  * Если в базе уже есть одно окружение под разными адресами, создание индекса упадёт, транзакция откатится
  * и прежний индекс останется. Найти дубли: `SELECT environment_id, server_id, count(*) FROM destination
- * GROUP BY 1, 2 HAVING count(*) > 1`; лишние назначения выключить и переименовать вручную, затем повторить.
+ * GROUP BY 1, 2 HAVING count(*) > 1`; лишние строки удалить (на назначения пока ничего не ссылается,
+ * аудит хранит только id) — выключение не поможет, индекс полный — и повторить миграцию.
  */
 export async function up(db: Kysely<unknown>): Promise<void> {
   await sql`DROP INDEX destination_target_uq`.execute(db)

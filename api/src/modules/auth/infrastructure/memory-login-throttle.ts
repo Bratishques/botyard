@@ -13,6 +13,8 @@ export const DEFAULT_LOGIN_RULES: readonly ThrottleRule[] = [
 ]
 
 const MAX_KEYS = 10_000
+/** Пауза для попытки, которой не нашлось места: карта занята живыми блокировками */
+const FULL_RETRY_MS = 60_000
 
 type Entry = { count: number; since: number }
 
@@ -24,13 +26,16 @@ type Entry = { count: number; since: number }
  * вход снимает свой резерв — счёт остаётся только неудачам.
  *
  * Ограничение — на реплику: при N репликах — N лимитов (общий счётчик — этап 2, docs/roadmap.md).
- * Карта ограничена; при переполнении сначала уходят истёкшие записи, затем IP-ключи, и только потом
- * самые старые — живая блокировка почты не вытесняется перебором адресов.
+ * Карта ограничена; при переполнении уходят истёкшие и незаблокированные записи, а живые блокировки —
+ * никогда: перебор чужих почт или адресов не снимает блокировку жертвы раньше окна.
  */
 export class MemoryLoginThrottle implements LoginThrottle {
   private readonly attempts = new Map<string, Entry>()
 
-  constructor(private readonly rules: readonly ThrottleRule[] = DEFAULT_LOGIN_RULES) {}
+  constructor(
+    private readonly rules: readonly ThrottleRule[] = DEFAULT_LOGIN_RULES,
+    private readonly maxKeys = MAX_KEYS,
+  ) {}
 
   tryAcquire(keys: readonly string[], now: number): number | null {
     let blockedFor: number | null = null
@@ -40,6 +45,10 @@ export class MemoryLoginThrottle implements LoginThrottle {
       if (rule && entry && entry.count >= rule.maxAttempts) blockedFor = Math.max(blockedFor ?? 0, entry.since + rule.windowMs - now)
     }
     if (blockedFor !== null) return blockedFor
+
+    const missing = keys.filter((key) => this.ruleFor(key) && !this.attempts.has(key)).length
+    // Места нет, а освобождать его за счёт живых блокировок нельзя — попытка не допускается
+    if (!this.ensureCapacity(missing, now)) return FULL_RETRY_MS
 
     for (const key of keys) {
       if (!this.ruleFor(key)) continue
@@ -77,23 +86,32 @@ export class MemoryLoginThrottle implements LoginThrottle {
     return entry
   }
 
-  private insert(key: string, entry: Entry, now: number): void {
-    if (this.attempts.size >= MAX_KEYS) this.evict(now)
+  private insert(key: string, entry: Entry, _now: number): void {
     this.attempts.set(key, entry)
   }
 
-  private evict(now: number): void {
-    for (const key of [...this.attempts.keys()]) this.live(key, now)
-    if (this.attempts.size < MAX_KEYS) return
+  /**
+   * Место под `needed` новых ключей. Порядок вытеснения: истёкшие записи, затем незаблокированные с
+   * наименьшим счётом — пачкой до 90% ёмкости, чтобы не делать полный проход на каждой вставке.
+   * Заблокированные (счёт достиг лимита) не вытесняются никогда: иначе перебор чужих ключей снимал бы
+   * блокировку жертвы раньше окна.
+   */
+  private ensureCapacity(needed: number, now: number): boolean {
+    if (this.attempts.size + needed <= this.maxKeys) return true
 
-    for (const key of this.attempts.keys()) {
-      if (key.startsWith('ip:')) {
-        this.attempts.delete(key)
-        return
-      }
+    for (const key of [...this.attempts.keys()]) this.live(key, now)
+    if (this.attempts.size + needed <= this.maxKeys) return true
+
+    const evictable = [...this.attempts.entries()]
+      .filter(([key, entry]) => entry.count < (this.ruleFor(key)?.maxAttempts ?? 0))
+      .sort(([, a], [, b]) => a.count - b.count)
+    const target = Math.floor(this.maxKeys * 0.9)
+    for (const [key] of evictable) {
+      if (this.attempts.size + needed <= target) break
+      this.attempts.delete(key)
     }
-    const oldest = this.attempts.keys().next().value
-    if (oldest !== undefined) this.attempts.delete(oldest)
+
+    return this.attempts.size + needed <= this.maxKeys
   }
 
   private ruleFor(key: string): ThrottleRule | undefined {

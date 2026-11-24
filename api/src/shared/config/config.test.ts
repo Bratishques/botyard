@@ -34,6 +34,11 @@ describe('loadConfig', () => {
     expect(loadConfig({ ...base, TRUST_PROXY: '1' }).TRUST_PROXY).toBe(1)
     expect(loadConfig({ ...base, TRUST_PROXY: '10.0.0.0/8, 172.16.0.0/12' }).TRUST_PROXY).toEqual(['10.0.0.0/8', '172.16.0.0/12'])
     expect(() => loadConfig({ ...base, TRUST_PROXY: 'true' })).toThrow(/TRUST_PROXY/)
+    expect(loadConfig({ ...base, TRUST_PROXY: '::1, 10.0.0.1' }).TRUST_PROXY).toEqual(['::1', '10.0.0.1'])
+    // proxy-addr прочёл бы `100` и `1,2` как адреса и молча перестал бы доверять; /1 — почти `true`
+    for (const value of ['100', '1,2', 'yes', 'TRUE', ' true', '0.0.0.0/1', '10.0.0.0/7', '10.0.0.0/33', 'traefik']) {
+      expect(() => loadConfig({ ...base, TRUST_PROXY: value })).toThrow(/TRUST_PROXY/)
+    }
   })
 
   test('срок сессии ограничен 1..720 часами', () => {
