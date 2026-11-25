@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test'
+import { driftOf } from './deployment'
 import { firstStep, nextStep, OUTCOME, RETRY, retryDelayMs, SAGA, SagaStep } from './saga'
 
 describe('сага', () => {
@@ -15,6 +16,18 @@ describe('сага', () => {
   test('упавшее удаление оставляет DELETING (можно повторить), прочие отказы — FAILED', () => {
     expect(OUTCOME.DELETE).toEqual({ succeeded: 'DELETED', failed: 'DELETING' })
     expect(OUTCOME.STOP).toEqual({ succeeded: 'STOPPED', failed: 'FAILED' })
+  })
+
+  test('дрейф: остановлен, запущен, удалён, упал в Dokploy; во время сборки и для FAILED — без вывода или чисто', () => {
+    expect(driftOf('RUNNING', 'idle')).toBe('STOPPED_IN_DOKPLOY')
+    expect(driftOf('RUNNING', 'error')).toBe('FAILED_IN_DOKPLOY')
+    expect(driftOf('RUNNING', 'done')).toBeNull()
+    expect(driftOf('STOPPED', 'done')).toBe('RUNNING_IN_DOKPLOY')
+    expect(driftOf('STOPPED', 'idle')).toBeNull()
+    expect(driftOf('FAILED', 'missing')).toBe('APP_MISSING')
+    expect(driftOf('FAILED', 'done')).toBeNull()
+    expect(driftOf('RUNNING', 'running')).toBeUndefined()
+    expect(driftOf('RUNNING', 'something-new')).toBeUndefined()
   })
 
   test('пауза повтора: экспонента с jitter под потолком, не меньше Retry-After', () => {

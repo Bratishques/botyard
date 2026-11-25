@@ -14,10 +14,12 @@ import { DatabaseModule } from './shared/database/database.module'
 import { DokployModule } from './shared/dokploy/dokploy.module'
 import { HousekeepingModule } from './shared/housekeeping/housekeeping'
 import { IdempotencyModule } from './shared/idempotency/idempotency'
+import { InboxModule } from './shared/inbox/inbox'
 import { HttpMetricsMiddleware } from './shared/observability/http-metrics.middleware'
 import { loggerOptions } from './shared/observability/logger'
 import { MetricsServer } from './shared/observability/metrics'
 import { OutboxModule } from './shared/outbox/outbox'
+import { RealtimeModule } from './shared/realtime/deployment-events'
 
 @Module({})
 export class AppModule implements NestModule {
@@ -34,6 +36,8 @@ export class AppModule implements NestModule {
         OutboxModule,
         IdempotencyModule,
         HousekeepingModule,
+        InboxModule,
+        RealtimeModule,
         HealthModule,
         AuthModule,
         DestinationsModule,

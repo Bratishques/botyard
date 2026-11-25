@@ -19,6 +19,7 @@ import {
   type DokployCatalog,
 } from '../domain/ports'
 import { DestinationSecrets } from './destination-secrets'
+import { DestinationWebhooks } from './destination-webhooks'
 import { toDestinationError, verifyTarget } from './verify-target'
 
 export interface CreateDestinationInput {
@@ -56,6 +57,7 @@ export class DestinationUseCases {
     private readonly secrets: DestinationSecrets,
     private readonly unitOfWork: UnitOfWork,
     private readonly audit: AuditLog,
+    private readonly webhooks: DestinationWebhooks,
   ) {}
 
   list(): Promise<Destination[]> {
@@ -102,7 +104,7 @@ export class DestinationUseCases {
     const id = Bun.randomUUIDv7()
     const { sealed, hint } = await this.secrets.seal(id, baseUrl, input.apiKey)
 
-    return this.unitOfWork.run(async () => {
+    const created = await this.unitOfWork.run(async () => {
       const created = await this.repository
         .insert({
           id,
@@ -125,6 +127,10 @@ export class DestinationUseCases {
 
       return created
     })
+    // Вебхук Dokploy — после записи и вне транзакции; неудача не отменяет создание (см. DestinationWebhooks)
+    await this.webhooks.register(created, input.apiKey)
+
+    return created
   }
 
   async update(id: string, input: UpdateDestinationInput, actor: string): Promise<Destination> {
@@ -180,7 +186,7 @@ export class DestinationUseCases {
       assertVisible(await this.repository.liveApplicationIds(id), visible)
     }
 
-    return this.unitOfWork.run(async () => {
+    const updated = await this.unitOfWork.run(async () => {
       // Роботы назначения живут по прежнему адресу и в прежнем окружении: сага ищет их там. Переезд назначения
       // с живыми роботами оставил бы их работать без управления, а удаление сочло бы их удалёнными
       const live = await this.repository.hasLiveDeployments(id)
@@ -205,6 +211,16 @@ export class DestinationUseCases {
 
       return updated
     })
+
+    // Другой адрес, окружение или ключ — уведомление в Dokploy регистрируется заново (повторяемо; неудача только
+    // записывается). Иначе вебхук остался бы в прежнем Dokploy или с ключом, который больше не действует
+    if (targetChanged) {
+      await this.webhooks.register(updated, input.apiKey ?? (() => this.secrets.open(updated.id, updated.baseUrl, updated.apiKeySealed)), {
+        rotateSecret: baseUrlChanged,
+      })
+    }
+
+    return updated
   }
 
   /** Включение и выключение. Повтор (уже в нужном статусе) — без изменений: версия не растёт, аудита нет */
@@ -249,6 +265,8 @@ export class DestinationUseCases {
         environmentId: current.environmentId,
         serverId: current.serverId,
       })
+      // Связь есть — заодно убедиться, что вебхук зарегистрирован (повторяемо; неудача только записывается)
+      await this.webhooks.register(current, apiKey)
     } catch (caught) {
       if (!(caught instanceof DestinationError)) throw caught
       error = `${caught.code}: ${caught.message}`

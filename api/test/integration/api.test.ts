@@ -5,14 +5,18 @@ import { createHttpApp } from '../../src/main'
 import { hashToken } from '../../src/modules/auth/application/auth.service'
 import { CreateOperator } from '../../src/modules/auth/application/create-operator'
 import { PostgresOperatorRepository } from '../../src/modules/auth/infrastructure/postgres-auth.repositories'
+import { STREAMS_PER_OPERATOR } from '../../src/modules/auth/presentation/session-streams'
 import { SyncCatalog } from '../../src/modules/catalog/application/sync-catalog'
 import { FilesystemCatalogSource } from '../../src/modules/catalog/infrastructure/filesystem-catalog.source'
 import { PostgresCatalogRepository } from '../../src/modules/catalog/infrastructure/postgres-catalog.repository'
 import { AuditLog } from '../../src/shared/audit/audit'
 import { loadCatalogConfig, loadConfig } from '../../src/shared/config/config'
+import { SecretBox, secretContext } from '../../src/shared/crypto/secret-box'
 import { UnitOfWork } from '../../src/shared/database/unit-of-work'
+import { DEPLOYMENT_EVENTS, type DeploymentEvents } from '../../src/shared/realtime/deployment-events'
 import projectsFixture from '../fixtures/dokploy/project.all.json'
 import unauthorizedFixture from '../fixtures/dokploy/unauthorized.json'
+import buildSuccessFixture from '../fixtures/dokploy/webhook.build-success.json'
 import { db } from './setup'
 
 /**
@@ -390,6 +394,105 @@ describe('клиенты по HTTP', () => {
 
     expect(live.status).toBe(409)
     expect(((await live.json()) as { code: string }).code).toBe('CUSTOMER_LIVE_CHECK_DISABLED')
+  })
+})
+
+describe('живой статус по SSE', () => {
+  test('поток /events/deployments доставляет событие «развёртывание изменилось»; уход клиента снимает подписку', async () => {
+    const cookie = await session()
+    const controller = new AbortController()
+    const response = await fetch(`${base}/events/deployments`, { headers: { cookie }, signal: controller.signal })
+    expect(response.status).toBe(200)
+    expect(response.headers.get('content-type')).toContain('text/event-stream')
+    const reader = response.body?.getReader()
+    if (!reader) throw new Error('no stream')
+    await reader.read() // `: connected`
+
+    const id = crypto.randomUUID()
+    app.get<DeploymentEvents>(DEPLOYMENT_EVENTS).changed(id)
+    let received = ''
+    while (!received.includes(id)) received += new TextDecoder().decode((await reader.read()).value)
+    expect(received).toContain(`event: deployment\ndata: {"deploymentId":"${id}"}`)
+
+    controller.abort()
+    expect((await fetch(`${base}/events/deployments`)).status).toBe(401)
+  })
+
+  test('потоков сверх предела на оператора — 429; закрытый поток место освобождает', async () => {
+    const cookie = await session()
+    const open = await Promise.all(
+      Array.from({ length: STREAMS_PER_OPERATOR.events }, async () => {
+        const controller = new AbortController()
+        const response = await fetch(`${base}/events/deployments`, { headers: { cookie }, signal: controller.signal })
+        expect(response.status).toBe(200)
+        return controller
+      }),
+    )
+
+    const extra = await fetch(`${base}/events/deployments`, { headers: { cookie } })
+    expect(extra.status).toBe(429)
+    expect(((await extra.json()) as { code: string }).code).toBe('TOO_MANY_STREAMS')
+
+    open[0]?.abort()
+    let again = 429
+    for (let i = 0; i < 50 && again === 429; i++) {
+      await Bun.sleep(20)
+      const response = await fetch(`${base}/events/deployments`, { headers: { cookie } })
+      again = response.status
+      if (again === 200) await response.body?.cancel()
+    }
+    expect(again).toBe(200)
+    for (const controller of open) controller.abort()
+  })
+})
+
+describe('вебхук Dokploy по HTTP', () => {
+  test('без секрета или с чужим — 401 без подробностей; с секретом назначения — 200, тело Dokploy как есть', async () => {
+    const id = Bun.randomUUIDv7()
+    await db
+      .insertInto('destination')
+      .values({
+        id,
+        name: `wh-http-${id.slice(-8)}`,
+        base_url: `https://dokploy-${id.slice(-8)}.example.com`,
+        api_key_sealed: new Uint8Array([1]),
+        api_key_hint: '••••abcd',
+        project_id: 'prj',
+        environment_id: `env-${id.slice(-12)}`,
+        server_id: null,
+      })
+      .execute()
+    const token = `tok-${crypto.randomUUID()}`
+    await db
+      .insertInto('destination_webhook')
+      .values({
+        destination_id: id,
+        secret_sealed: await app.get(SecretBox).seal(token, secretContext('destination', id, 'webhook_secret')),
+      })
+      .execute()
+    const post = (headers: Record<string, string>) =>
+      fetch(`${base}/webhooks/dokploy/${id}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', ...headers },
+        body: JSON.stringify(buildSuccessFixture),
+      })
+
+    // Секрет проверяется раньше тела: пустое тело без секрета — 401, а не 400 со схемой полей
+    const probe = await fetch(`${base}/webhooks/dokploy/${id}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{}',
+    })
+    expect(probe.status).toBe(401)
+
+    const anonymous = await post({})
+    expect(anonymous.status).toBe(401)
+    expect(((await anonymous.json()) as { code: string }).code).toBe('WEBHOOK_UNAUTHORIZED')
+    expect((await post({ 'x-botyard-token': 'wrong' })).status).toBe(401)
+
+    const accepted = await post({ 'x-botyard-token': token })
+    expect(accepted.status).toBe(200)
+    expect(await accepted.json()).toEqual({ result: 'ignored' })
   })
 })
 

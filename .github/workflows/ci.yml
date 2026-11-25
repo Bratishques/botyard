@@ -40,6 +40,15 @@ jobs:
           --health-cmd "rabbitmq-diagnostics -q ping"
           --health-interval 10s
           --health-retries 12
+      # Шина живого статуса (api/test/integration/redis-events.test.ts, REDIS_TEST_URL в api/.env.test)
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 56379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-retries 10
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2

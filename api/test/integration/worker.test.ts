@@ -6,7 +6,10 @@ import { FilesystemCatalogSource } from '../../src/modules/catalog/infrastructur
 import { PostgresCatalogRepository } from '../../src/modules/catalog/infrastructure/postgres-catalog.repository'
 import { CustomerUseCases } from '../../src/modules/customers/application/customer-use-cases'
 import { PostgresCustomerRepository } from '../../src/modules/customers/infrastructure/postgres-customer.repository'
+import { DeploymentLogs } from '../../src/modules/deployments/application/deployment-logs'
 import { DeploymentUseCases } from '../../src/modules/deployments/application/deployment-use-cases'
+import { DokployWebhookHandler } from '../../src/modules/deployments/application/dokploy-webhook-handler'
+import { DriftReconciler } from '../../src/modules/deployments/application/drift-reconciler'
 import { OperationReconciler } from '../../src/modules/deployments/application/operation-reconciler'
 import { OperationWorker, type StepMessage } from '../../src/modules/deployments/application/operation-worker'
 import {
@@ -22,16 +25,20 @@ import { PostgresDeploymentRepository } from '../../src/modules/deployments/infr
 import { PostgresOperationStore } from '../../src/modules/deployments/infrastructure/postgres-operation.store'
 import { DestinationSecrets } from '../../src/modules/destinations/application/destination-secrets'
 import { DestinationUseCases } from '../../src/modules/destinations/application/destination-use-cases'
+import { DestinationWebhooks } from '../../src/modules/destinations/application/destination-webhooks'
 import type { DokployCatalog } from '../../src/modules/destinations/domain/ports'
 import { PostgresDestinationRepository } from '../../src/modules/destinations/infrastructure/postgres-destination.repository'
+import { PostgresDestinationWebhookRepository } from '../../src/modules/destinations/infrastructure/postgres-destination-webhook.repository'
 import { AuditLog } from '../../src/shared/audit/audit'
 import { loadCatalogConfig, loadConfig } from '../../src/shared/config/config'
 import { LocalKeyEncryptionKey } from '../../src/shared/crypto/key-encryption-key'
 import { SecretBox } from '../../src/shared/crypto/secret-box'
 import { UnitOfWork } from '../../src/shared/database/unit-of-work'
+import { WebhookInbox } from '../../src/shared/inbox/inbox'
 import { Outbox } from '../../src/shared/outbox/outbox'
+import { LocalDeploymentEvents } from '../../src/shared/realtime/deployment-events'
 import { ROBOT_CA_MOUNT_PATH, TINVEST_ADDRESS } from '../../src/shared/tinvest/tinvest'
-import { FakeTradingAccounts } from './fakes'
+import { FakeDokployNotifications, FakeTradingAccounts } from './fakes'
 import { db } from './setup'
 
 const TOKEN = 't.sandbox-token-0123456789abcdef'
@@ -93,8 +100,11 @@ class FakePlatform implements DeploymentPlatform {
     const list = this.deployments.get(appId) ?? []
     const latest = list.at(-1)
     if (latest?.status === 'running') {
-      if (this.pollsUntilDone <= 0) list[list.length - 1] = { ...latest, status: this.deployResult }
-      else this.pollsUntilDone--
+      if (this.pollsUntilDone <= 0) {
+        list[list.length - 1] = { ...latest, status: this.deployResult }
+        const app = this.apps.get(appId)
+        if (app && this.deployResult === 'done') app.running = true
+      } else this.pollsUntilDone--
     }
     return list.at(-1) ?? null
   }
@@ -122,6 +132,26 @@ class FakePlatform implements DeploymentPlatform {
   /** Удаление «прошло», а приложение осталось (Dokploy ответил 200, но не удалил) */
   keepOnDelete = false
 
+  /** Что отдаёт readLogs (строки `<время> <текст>`) */
+  logs = ''
+
+  async readLogs(target: PlatformTarget, _appId: string, _options: { tail: number; since?: string }): Promise<string> {
+    this.record('readLogs', target)
+    return this.logs
+  }
+
+  /** Состояние приложения для сверки дрейфа: по умолчанию — по флагу running */
+  statusOverride = new Map<string, string>()
+
+  async appStatus(target: PlatformTarget, appId: string): Promise<string> {
+    this.record('appStatus', target)
+    const override = this.statusOverride.get(appId)
+    if (override) return override
+    const app = this.apps.get(appId)
+    if (!app) return 'missing'
+    return app.running ? 'done' : 'idle'
+  }
+
   async deleteApp(target: PlatformTarget, appId: string): Promise<void> {
     this.record('deleteApp', target)
     if (!this.keepOnDelete) this.apps.delete(appId)
@@ -129,6 +159,7 @@ class FakePlatform implements DeploymentPlatform {
 }
 
 const unitOfWork = new UnitOfWork(db)
+const events = new LocalDeploymentEvents()
 const audit = new AuditLog(unitOfWork)
 const box = new SecretBox([new LocalKeyEncryptionKey(1, randomBytes(32))])
 const outbox = new Outbox(unitOfWork)
@@ -147,8 +178,9 @@ const destinations = new DestinationUseCases(
   destinationSecrets,
   unitOfWork,
   audit,
+  new DestinationWebhooks(new PostgresDestinationWebhookRepository(unitOfWork), new FakeDokployNotifications(), loadConfig(), box),
 )
-const deployments = new DeploymentUseCases(new PostgresDeploymentRepository(unitOfWork), unitOfWork, outbox, audit)
+const deployments = new DeploymentUseCases(new PostgresDeploymentRepository(unitOfWork), unitOfWork, outbox, audit, events)
 
 function workerWith(platform: DeploymentPlatform): OperationWorker {
   return new OperationWorker(
@@ -162,6 +194,7 @@ function workerWith(platform: DeploymentPlatform): OperationWorker {
     unitOfWork,
     outbox,
     audit,
+    events,
   )
 }
 
@@ -687,7 +720,7 @@ describe('воркер саги: гонки и повторная доставк
 })
 
 describe('reconciler застрявших операций', () => {
-  const reconciler = new OperationReconciler(store, unitOfWork, outbox, audit)
+  const reconciler = new OperationReconciler(store, unitOfWork, outbox, audit, events)
   /** Команда потеряна: сообщения в outbox нет, операция без движения дольше порога */
   async function loseCommand(operationId: string, minutesAgo = 11) {
     await db.deleteFrom('outbox_message').where(sql<boolean>`payload->>'operationId' = ${operationId}`).execute()
@@ -742,6 +775,22 @@ describe('reconciler застрявших операций', () => {
     expect(after.deployment).toMatchObject({ status: 'FAILED', active_operation_id: null })
     const events = await db.selectFrom('audit_event').select(['actor', 'action']).where('target_id', '=', deployment.id).execute()
     expect(events).toContainEqual({ actor: 'system:reconciler', action: 'deployment.provision_failed' })
+  })
+
+  test('брошенная операция сбрасывает дрейф: наблюдение было про прежнее состояние', async () => {
+    const { deployment, operation } = await provision()
+    await loseCommand(operation.id)
+    await sql`UPDATE operation SET context = context || '{"kicks": 3}'::jsonb WHERE id = ${operation.id}`.execute(db)
+    await sql`UPDATE bot_deployment SET drift = 'APP_MISSING', drift_checked_at = now() WHERE id = ${deployment.id}`.execute(db)
+
+    await reconciler.tick()
+
+    const row = await db
+      .selectFrom('bot_deployment')
+      .select(['drift', 'drift_checked_at'])
+      .where('id', '=', deployment.id)
+      .executeTakeFirstOrThrow()
+    expect(row).toEqual({ drift: null, drift_checked_at: null })
   })
 
   test('гонка: воркер взял шаг между чтением и пинком — пинок не проходит, команда не дублируется', async () => {
@@ -831,10 +880,212 @@ describe('reconciler застрявших операций', () => {
     const { operation } = await provision()
     await loseCommand(operation.id)
 
-    await Promise.all([reconciler.tick(), new OperationReconciler(store, unitOfWork, outbox, audit).tick()])
+    await Promise.all([reconciler.tick(), new OperationReconciler(store, unitOfWork, outbox, audit, events).tick()])
 
     expect(await pending(operation.id)).toHaveLength(1)
     const row = await db.selectFrom('operation').select('context').where('id', '=', operation.id).executeTakeFirstOrThrow()
     expect(row.context).toMatchObject({ kicks: 1 })
+  })
+})
+
+describe('вебхук Dokploy о сборке', () => {
+  const handler = new DokployWebhookHandler(store, new WebhookInbox(unitOfWork), outbox, unitOfWork, events)
+
+  /** Довести provision до ожидания деплоя: шаг await_deploy отпущен на опрос */
+  async function awaitingDeploy() {
+    const platform = new FakePlatform()
+    platform.pollsUntilDone = 100
+    const created = await provision()
+    const worker = workerWith(platform)
+    for (;;) {
+      const [next] = await pending(created.operation.id)
+      if (!next) throw new Error('no command')
+      await db.updateTable('outbox_message').set({ published_at: new Date() }).where('id', '=', next.id).execute()
+      await worker.handle(next.message)
+      if (next.message.step === 'await_deploy') break
+    }
+    return { ...created, platform, worker }
+  }
+
+  const event = (appName: string, timestamp = new Date().toISOString()) => ({
+    type: 'build',
+    status: 'success',
+    applicationName: appName,
+    timestamp,
+  })
+
+  test('событие будит ожидание деплоя сразу: отложенный опрос устаревает, дубль события отсекается', async () => {
+    const { deployment, operation, target } = await awaitingDeploy()
+    const [delayed] = await pending(operation.id)
+    if (!delayed) throw new Error('no delayed poll')
+
+    const sent = event(deployment.appName)
+    expect(await handler.handle(target.id, sent)).toBe('nudged')
+    expect(await handler.handle(target.id, sent)).toBe('duplicate')
+
+    const commands = await pending(operation.id)
+    expect(commands).toHaveLength(2)
+    const nudge = commands.find((command) => command.id !== delayed.id)
+    expect(nudge?.message).toMatchObject({ step: 'await_deploy', wake: expect.any(String) })
+    expect(nudge?.message.wake).not.toBe(delayed.message.wake)
+    // Отложенный опрос теперь устарел: его доставка Dokploy не трогает
+    const platform = new FakePlatform()
+    await workerWith(platform).handle(delayed.message)
+    expect(platform.calls).toEqual([])
+  })
+
+  test('пробуждение не чаще раза в 5 секунд на операцию; событие не о сборке не попадает в inbox', async () => {
+    const { deployment, operation, target } = await awaitingDeploy()
+
+    expect(await handler.handle(target.id, event(deployment.appName, '2026-11-25T10:00:00.000Z'))).toBe('nudged')
+    // Другое событие (не дубль), но сразу следом — опроса Dokploy не добавляет
+    expect(await handler.handle(target.id, event(deployment.appName, '2026-11-25T10:00:01.000Z'))).toBe('ignored')
+    await sql`UPDATE operation SET context = context || jsonb_build_object('nudgedAt', now() - interval '6 seconds') WHERE id = ${operation.id}`.execute(
+      db,
+    )
+    expect(await handler.handle(target.id, event(deployment.appName, '2026-11-25T10:00:02.000Z'))).toBe('nudged')
+
+    expect(await handler.handle(target.id, { ...event(deployment.appName), type: 'backup' })).toBe('ignored')
+    const stored = await db.selectFrom('webhook_inbox').select('status').where('application_name', '=', deployment.appName).execute()
+    expect(stored).toHaveLength(3)
+  })
+
+  test('чужое приложение, не-сборка и шаг, который сейчас арендован, — без пробуждения', async () => {
+    const { deployment, operation, target } = await awaitingDeploy()
+
+    expect(await handler.handle(target.id, event('by-000000000000'))).toBe('ignored')
+    expect(await handler.handle(target.id, { ...event(deployment.appName), type: 'backup' })).toBe('ignored')
+
+    const claimed = await store.claim(operation.id, 'await_deploy', (await pending(operation.id))[0]?.message.wake ?? null, 60_000)
+    expect('reason' in claimed).toBe(false)
+    expect(await handler.handle(target.id, event(deployment.appName))).toBe('ignored')
+  })
+})
+
+describe('сверка дрейфа с Dokploy', () => {
+  const reconciler = () =>
+    new DriftReconciler(new PostgresDeploymentRepository(unitOfWork), currentPlatform, destinations, unitOfWork, audit, events)
+  let currentPlatform = new FakePlatform()
+  const due = (id: string) => sql`UPDATE bot_deployment SET drift_checked_at = now() - interval '6 minutes' WHERE id = ${id}`.execute(db)
+  const driftOfRow = async (id: string) =>
+    await db.selectFrom('bot_deployment').select(['drift', 'status', 'version']).where('id', '=', id).executeTakeFirstOrThrow()
+
+  test('робота остановили руками в Dokploy — дрейф с аудитом, статус не меняется; запустили обратно — дрейф снят', async () => {
+    currentPlatform = new FakePlatform()
+    const { deployment } = await running(currentPlatform)
+    const [app] = [...currentPlatform.apps.values()]
+    if (!app) throw new Error('no app')
+    const before = await driftOfRow(deployment.id)
+
+    app.running = false
+    await reconciler().tick()
+    expect(await driftOfRow(deployment.id)).toEqual({ ...before, drift: 'STOPPED_IN_DOKPLOY' })
+
+    app.running = true
+    await reconciler().tick() // сверено только что — не чаще раза в 5 минут
+    expect((await driftOfRow(deployment.id)).drift).toBe('STOPPED_IN_DOKPLOY')
+    await due(deployment.id)
+    await reconciler().tick()
+    expect((await driftOfRow(deployment.id)).drift).toBeNull()
+
+    const events = await db.selectFrom('audit_event').select(['action', 'actor']).where('target_id', '=', deployment.id).execute()
+    expect(events.map((event) => event.action)).toEqual(expect.arrayContaining(['deployment.drift_detected', 'deployment.drift_cleared']))
+  })
+
+  test('устаревшее наблюдение (прочитано до чужой записи) не затирает свежее', async () => {
+    currentPlatform = new FakePlatform()
+    const { deployment } = await running(currentPlatform)
+    const repository = new PostgresDeploymentRepository(unitOfWork)
+    const [read] = (await repository.dueForDriftCheck(5 * 60_000, 500)).filter((item) => item.id === deployment.id)
+    if (!read) throw new Error('not due')
+
+    // Другой reconciler успел сверить и записать позже нашего чтения
+    expect(await repository.recordDrift(read.id, read.version, read.driftCheckedAt, null)).not.toBe(false)
+    expect(await repository.recordDrift(read.id, read.version, read.driftCheckedAt, 'STOPPED_IN_DOKPLOY')).toBe(false)
+    expect((await driftOfRow(deployment.id)).drift).toBeNull()
+  })
+
+  test('развёртывание изменилось после чтения (версия) — наблюдение не записывается, даже если время сверки то же', async () => {
+    currentPlatform = new FakePlatform()
+    const { deployment } = await running(currentPlatform)
+    const repository = new PostgresDeploymentRepository(unitOfWork)
+    const [read] = (await repository.dueForDriftCheck(5 * 60_000, 500)).filter((item) => item.id === deployment.id)
+    if (!read) throw new Error('not due')
+
+    await sql`UPDATE bot_deployment SET version = version + 1 WHERE id = ${deployment.id}`.execute(db)
+
+    expect(await repository.recordDrift(read.id, read.version, read.driftCheckedAt, 'STOPPED_IN_DOKPLOY')).toBe(false)
+    expect((await driftOfRow(deployment.id)).drift).toBeNull()
+  })
+
+  test('назначение выключено — его развёртывания не сверяются', async () => {
+    currentPlatform = new FakePlatform()
+    const { deployment } = await running(currentPlatform)
+    const { destination_id } = await db
+      .selectFrom('bot_deployment')
+      .select('destination_id')
+      .where('id', '=', deployment.id)
+      .executeTakeFirstOrThrow()
+    await db.updateTable('destination').set({ status: 'DISABLED' }).where('id', '=', destination_id).execute()
+    try {
+      const due = await new PostgresDeploymentRepository(unitOfWork).dueForDriftCheck(5 * 60_000, 10_000)
+      expect(due.map((item) => item.id)).not.toContain(deployment.id)
+    } finally {
+      await db.updateTable('destination').set({ status: 'ACTIVE' }).where('id', '=', destination_id).execute()
+    }
+  })
+
+  test('дрейф не изменился — повторного аудита нет', async () => {
+    currentPlatform = new FakePlatform()
+    const { deployment } = await running(currentPlatform)
+    const [app] = [...currentPlatform.apps.values()]
+    if (!app) throw new Error('no app')
+
+    app.running = false
+    await reconciler().tick()
+    await due(deployment.id)
+    await reconciler().tick()
+
+    const audited = await db
+      .selectFrom('audit_event')
+      .select('action')
+      .where('target_id', '=', deployment.id)
+      .where('action', '=', 'deployment.drift_detected')
+      .execute()
+    expect(audited).toHaveLength(1)
+  })
+
+  test('приложение удалили в Dokploy — APP_MISSING; операция оператора важнее наблюдения; её итог сбрасывает дрейф', async () => {
+    currentPlatform = new FakePlatform()
+    const { deployment, version } = await running(currentPlatform)
+    currentPlatform.apps.clear()
+    await reconciler().tick()
+    expect((await driftOfRow(deployment.id)).drift).toBe('APP_MISSING')
+
+    // Оператор запросил redeploy: пока операция активна, сверка развёртывание не трогает
+    const redeploy = await deployments.operate(deployment.id, 'REDEPLOY', (await driftOfRow(deployment.id)).version, 'operator:1')
+    expect(await new PostgresDeploymentRepository(unitOfWork).recordDrift(deployment.id, version, null, null)).toBe(false)
+    await drive(workerWith(currentPlatform), redeploy.operation.id)
+    expect(await driftOfRow(deployment.id)).toMatchObject({ status: 'RUNNING', drift: null })
+  })
+})
+
+describe('логи робота', () => {
+  test('строки по времени, токен клиента и ключ Dokploy вычищены; развёртывание без приложения — пусто', async () => {
+    const platform = new FakePlatform()
+    const { deployment } = await running(platform)
+    platform.logs = [`2026-11-24T21:24:37.000000000Z token ${TOKEN} key ${DOKPLOY_KEY}`, '2026-11-24T21:24:30.000000000Z started'].join(
+      '\n',
+    )
+    const reader = new DeploymentLogs(new PostgresDeploymentRepository(unitOfWork), platform, destinations, customers)
+
+    const lines = await reader.read(deployment.id, { tail: 50 })
+
+    expect(lines.map((line) => line.at)).toEqual(['2026-11-24T21:24:30.000000000Z', '2026-11-24T21:24:37.000000000Z'])
+    expect(JSON.stringify(lines)).not.toContain(TOKEN)
+    expect(JSON.stringify(lines)).not.toContain(DOKPLOY_KEY)
+
+    const fresh = await provision()
+    expect(await reader.read(fresh.deployment.id, { tail: 50 })).toEqual([])
   })
 })

@@ -34,8 +34,10 @@ multipass shell dokploy   # и дальше команда установки в
 2. **Проект и окружение:** создать проект `botyard`, взять `environmentId` окружения (`GET /api/project.all`).
 3. **Удалённые серверы (по желанию):** Dokploy умеет разворачивать на подключённые по SSH серверы.
    Их `serverId` указывается в назначении Botyard.
-4. **Вебхук (этап 3):** Notifications → Custom → URL `https://<api>/webhooks/dokploy`, заголовок
-   `x-botyard-signature` с общим секретом, события App Deploy и App Build Error.
+4. **Вебхук:** вручную не заводится. Botyard сам создаёт custom-уведомление `botyard-<id назначения>` при создании
+   назначения, его проверке и смене адреса: URL `<PUBLIC_API_URL>/webhooks/dokploy/<id>`, заголовок
+   `x-botyard-token` с секретом назначения, события App Deploy и App Build Error. `PUBLIC_API_URL` должен быть
+   доступен из Dokploy; без него вебхука нет, и статус сборки узнаётся только опросом.
 
 Проверка ключа:
 
@@ -78,3 +80,12 @@ curl -s -H "x-api-key: $DOKPLOY_API_KEY" "$DOKPLOY_URL/api/project.all" | jq '.[
   Порт api наружу не публикуется: при доверии по числу хопов прямое соединение в обход Traefik подделает
   `X-Forwarded-For`. Надёжнее вместо `1` указать подсеть сети Traefik.
 - Cookie сессии — `SESSION_COOKIE_SECURE=true` (по умолчанию): админка открывается только по https.
+
+## Вебхуки о сборке
+
+Если api доступен из Dokploy, задайте `PUBLIC_API_URL` (например, `https://botyard.example.com`). Тогда при создании
+и проверке назначения api сам зарегистрирует в Dokploy custom-уведомление `botyard-<id назначения>` о сборках со
+своим секретом в заголовке. Без адреса исход деплоя узнаётся опросом — медленнее, но так же надёжно. Уведомление
+действует на всю организацию Dokploy: события чужих приложений api принимает и игнорирует.
+
+В локальной песочнице (`sandbox.md`) Dokploy видит хост по адресу `172.17.0.1`: `PUBLIC_API_URL=http://172.17.0.1:4000`.

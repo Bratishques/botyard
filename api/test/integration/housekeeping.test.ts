@@ -3,11 +3,12 @@ import { sql } from 'kysely'
 import { UnitOfWork } from '../../src/shared/database/unit-of-work'
 import { Housekeeping } from '../../src/shared/housekeeping/housekeeping'
 import { Idempotency } from '../../src/shared/idempotency/idempotency'
+import { WebhookInbox } from '../../src/shared/inbox/inbox'
 import { Outbox } from '../../src/shared/outbox/outbox'
 import { db } from './setup'
 
 const unitOfWork = new UnitOfWork(db)
-const housekeeping = new Housekeeping(new Outbox(unitOfWork), new Idempotency(unitOfWork))
+const housekeeping = new Housekeeping(new Outbox(unitOfWork), new Idempotency(unitOfWork), new WebhookInbox(unitOfWork))
 
 async function message(publishedDaysAgo: number | null): Promise<string> {
   const id = Bun.randomUUIDv7()
@@ -91,5 +92,41 @@ describe('ключ идемпотентности и очистка', () => {
 
     expect(result).toEqual({ statusCode: 201, response: { fresh: true }, replayed: false })
     expect(works).toBe(1)
+  })
+})
+
+describe('действия после коммита', () => {
+  test('внутри вложенной транзакции — только после коммита внешней; при откате — никогда', async () => {
+    const seen: string[] = []
+    const visibleAtSignal: number[] = []
+    const id = Bun.randomUUIDv7()
+
+    await unitOfWork.run(async () => {
+      await unitOfWork.run(async () => {
+        await sql`INSERT INTO outbox_message (id, topic, payload) VALUES (${id}, 'operation.step', '{}')`.execute(unitOfWork.db())
+        unitOfWork.afterCommit(() => seen.push('committed'))
+      })
+      expect(seen).toEqual([]) // внутренний run закончился, но коммита ещё нет
+      unitOfWork.afterCommit(() => {
+        // Сигнал уходит, когда запись уже видна другим соединениям
+        void db
+          .selectFrom('outbox_message')
+          .select('id')
+          .where('id', '=', id)
+          .execute()
+          .then((rows) => visibleAtSignal.push(rows.length))
+      })
+    })
+    expect(seen).toEqual(['committed'])
+    await Bun.sleep(50)
+    expect(visibleAtSignal).toEqual([1])
+
+    await expect(
+      unitOfWork.run(async () => {
+        unitOfWork.afterCommit(() => seen.push('rolled back'))
+        throw new Error('rollback')
+      }),
+    ).rejects.toThrow('rollback')
+    expect(seen).toEqual(['committed'])
   })
 })

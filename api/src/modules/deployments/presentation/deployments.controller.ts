@@ -19,13 +19,17 @@ import {
   ParseUUIDPipe,
   type PipeTransform,
   Post,
+  Query,
+  Req,
   Res,
 } from '@nestjs/common'
-import type { Response } from 'express'
+import type { Request, Response } from 'express'
 import { ZodBody } from '../../../shared/http/zod-body'
 import { IDEMPOTENCY_KEY, Idempotency, IdempotencyConflictError, IdempotencyErrorCode } from '../../../shared/idempotency/idempotency'
 import type { Operator } from '../../auth/domain/auth'
 import { CurrentOperator } from '../../auth/presentation/session.guard'
+import { SessionStreams } from '../../auth/presentation/session-streams'
+import { DeploymentLogs, hasGap, LOGS, type LogLine, linesAfter, sinceSecondsFor } from '../application/deployment-logs'
 import { DeploymentUseCases } from '../application/deployment-use-cases'
 import { type Deployment, DeploymentError, DeploymentErrorCode, type Operation, type OperationKind } from '../domain/deployment'
 
@@ -44,6 +48,8 @@ function deploymentView(deployment: Deployment): DeploymentView {
     status: deployment.status,
     activeOperationId: deployment.activeOperationId,
     lastError: deployment.lastError,
+    drift: deployment.drift,
+    driftCheckedAt: deployment.driftCheckedAt?.toISOString() ?? null,
     version: deployment.version,
     createdAt: deployment.createdAt.toISOString(),
     updatedAt: deployment.updatedAt.toISOString(),
@@ -114,6 +120,13 @@ const DEPLOYMENT_ID = new ParseUUIDPipe({
 
 const actor = (operator: Operator) => `operator:${operator.id}`
 
+const LOG_POLL_MS = 3_000
+
+function tailOf(input: string | undefined): number {
+  const value = Number(input)
+  return Number.isInteger(value) && value > 0 ? Math.min(value, LOGS.maxTail) : LOGS.defaultTail
+}
+
 const ACTIONS: Readonly<Record<string, Exclude<OperationKind, 'PROVISION'>>> = Object.assign(Object.create(null), DEPLOYMENT_ACTIONS)
 
 /**
@@ -125,11 +138,68 @@ export class DeploymentsController {
   constructor(
     private readonly deployments: DeploymentUseCases,
     private readonly idempotency: Idempotency,
+    private readonly logReader: DeploymentLogs,
+    private readonly streams: SessionStreams,
   ) {}
 
   @Get()
   async list(): Promise<DeploymentView[]> {
     return (await this.deployments.list()).map(deploymentView)
+  }
+
+  /** Хвост логов робота: `?tail=` строк (по умолчанию 200, не больше 1000), токен вычищен */
+  @Get(':id/logs')
+  async logs(@Param('id', DEPLOYMENT_ID) id: string, @Query('tail') tail?: string): Promise<{ lines: LogLine[] }> {
+    return { lines: await http(this.logReader.read(id, { tail: tailOf(tail) })) }
+  }
+
+  /**
+   * Живые логи (SSE `log`): опрос Dokploy каждые 3 с строками новее последней отданной. Поток закрывается, когда
+   * уходит клиент; ошибка Dokploy — событие `error` с кодом, поток живёт дальше
+   */
+  @Get(':id/logs/stream')
+  async logStream(
+    @Param('id', DEPLOYMENT_ID) id: string,
+    @CurrentOperator() operator: Operator,
+    @Req() request: Request,
+    @Res() response: Response,
+  ): Promise<void> {
+    // Место — до чтения из Dokploy: лишний запрос получает 429 без работы
+    const slot = this.streams.reserve(operator, 'logs')
+    let polledAt = Date.now()
+    let initial: LogLine[]
+    try {
+      initial = await http(this.logReader.read(id, { tail: LOGS.defaultTail }))
+    } catch (error) {
+      slot.release()
+      throw error
+    }
+    const stream = slot.open(request, response)
+    let { fresh, cursor } = linesAfter(initial, null)
+    for (const line of fresh) stream.send('log', line)
+
+    let stopped = false
+    stream.onClose(() => {
+      stopped = true
+    })
+    while (!stopped) {
+      await Bun.sleep(LOG_POLL_MS)
+      if (stopped) break
+      const started = Date.now()
+      try {
+        const sinceSeconds = sinceSecondsFor(polledAt, started)
+        const read = await this.logReader.read(id, { tail: LOGS.maxTail, ...(sinceSeconds !== undefined && { sinceSeconds }) })
+        polledAt = started
+        if (hasGap(read, cursor, LOGS.maxTail)) stream.send('logs-gap', {})
+        ;({ fresh, cursor } = linesAfter(read, cursor))
+        for (const line of fresh) stream.send('log', line)
+      } catch (error) {
+        const code = error instanceof DeploymentError ? error.code : 'LOGS_UNAVAILABLE'
+        stream.send('logs-error', { code })
+        // Развёртывания больше нет — опрашивать нечего
+        if (code === DeploymentErrorCode.NOT_FOUND) stream.close()
+      }
+    }
   }
 
   @Get(':id')

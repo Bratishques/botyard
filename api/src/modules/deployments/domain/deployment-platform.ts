@@ -58,6 +58,17 @@ export interface DeploymentPlatform {
   stop(target: PlatformTarget, appId: string): Promise<void>
   /** Удалить; приложения уже нет — тоже успех */
   deleteApp(target: PlatformTarget, appId: string): Promise<void>
+  /**
+   * Состояние приложения в Dokploy: `idle` (остановлено), `running` (идёт сборка), `done` (развёрнуто или
+   * запущено), `error` (сборка упала); `missing` — приложения нет. Работает ли сам контейнер, отсюда не видно
+   */
+  appStatus(target: PlatformTarget, appId: string): Promise<string>
+  /**
+   * Логи контейнера приложения: строки `<время RFC3339Nano> <текст>`, `tail` последних, `sinceSeconds` — за
+   * последние столько секунд. Dokploy v0.31.4 читает один контейнер приложения и принимает `since` только в виде
+   * `<число>[smhd]` или `all` (проверено на живом инстансе: RFC3339 — 400)
+   */
+  readLogs(target: PlatformTarget, appId: string, options: { tail: number; sinceSeconds?: number }): Promise<string>
 }
 
 export const DEPLOYMENT_PLATFORM = Symbol('DEPLOYMENT_PLATFORM')
