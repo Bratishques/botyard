@@ -44,8 +44,11 @@ export class DokployNotificationsAdapter implements DokployNotifications {
   ): Promise<string> {
     const target = { baseUrl, apiKey }
     // Две одновременные регистрации могли создать два уведомления с одним именем: лишнее слало бы каждое событие
-    // дважды и не обновлялось бы при смене адреса — оставить одно
-    const [existing, ...duplicates] = await this.findAll(target, notification.name)
+    // дважды и не обновлялось бы при смене адреса — оставить одно. Какое — не по порядку ответа Dokploy (он не
+    // гарантирован), а наименьший id: так любые две чистки оставят одно и то же
+    const [existing, ...duplicates] = (await this.findAll(target, notification.name)).sort((a, b) =>
+      a.notificationId < b.notificationId ? -1 : a.notificationId > b.notificationId ? 1 : 0,
+    )
     for (const duplicate of duplicates) {
       await this.client.command(target, 'notification.remove', { notificationId: duplicate.notificationId })
     }

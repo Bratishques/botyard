@@ -215,7 +215,9 @@ export class DestinationUseCases {
     // Другой адрес, окружение или ключ — уведомление в Dokploy регистрируется заново (повторяемо; неудача только
     // записывается). Иначе вебхук остался бы в прежнем Dokploy или с ключом, который больше не действует
     if (targetChanged) {
-      await this.webhooks.register(updated, input.apiKey ?? (await this.secrets.open(updated.id, updated.baseUrl, updated.apiKeySealed)))
+      await this.webhooks.register(updated, input.apiKey ?? (() => this.secrets.open(updated.id, updated.baseUrl, updated.apiKeySealed)), {
+        rotateSecret: baseUrlChanged,
+      })
     }
 
     return updated

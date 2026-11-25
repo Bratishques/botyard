@@ -47,11 +47,20 @@ export class FakeDokployNotifications implements DokployNotifications {
   fail = false
   /** Вызывается посреди регистрации — для переплетений */
   during: () => Promise<void> = async () => {}
+  /** Сколько регистраций шло одновременно (наибольшее) — для проверки, что они сериализованы */
+  maxConcurrent = 0
+  private inFlight = 0
 
   async upsertCustom(_baseUrl: string, _apiKey: string, notification: { name: string; endpoint: string; headers: Record<string, string> }) {
     if (this.fail) throw new Error('dokploy notification.createCustom: 503')
-    await this.during()
-    this.registered.set(notification.name, { endpoint: notification.endpoint, headers: notification.headers })
-    return `ntf-${notification.name.slice(-8)}`
+    this.inFlight++
+    this.maxConcurrent = Math.max(this.maxConcurrent, this.inFlight)
+    try {
+      await this.during()
+      this.registered.set(notification.name, { endpoint: notification.endpoint, headers: notification.headers })
+      return `ntf-${notification.name.slice(-8)}`
+    } finally {
+      this.inFlight--
+    }
   }
 }

@@ -50,6 +50,35 @@ export class PostgresDestinationWebhookRepository implements DestinationWebhookR
     return Number(result.numUpdatedRows) > 0
   }
 
+  async rotate(destinationId: string, secretSealed: Uint8Array): Promise<void> {
+    await this.unitOfWork
+      .db()
+      .insertInto('destination_webhook')
+      .values({ destination_id: destinationId, secret_sealed: secretSealed })
+      .onConflict((conflict) =>
+        conflict.column('destination_id').doUpdateSet({
+          secret_sealed: secretSealed,
+          // Прежняя регистрация — в прежнем Dokploy и со старым секретом: её больше нет
+          notification_id: null,
+          endpoint: null,
+          registered_at: null,
+          updated_at: sql<Date>`now()`,
+        }),
+      )
+      .execute()
+  }
+
+  /**
+   * Транзакционная advisory-блокировка на назначение. Транзакция держится, пока идут вызовы Dokploy (секунды):
+   * регистрация редкая — при создании, проверке и правке назначения
+   */
+  serialized<T>(destinationId: string, work: () => Promise<T>): Promise<T> {
+    return this.unitOfWork.run(async () => {
+      await sql`SELECT pg_advisory_xact_lock(hashtextextended(${`destination_webhook:${destinationId}`}, 0))`.execute(this.unitOfWork.db())
+      return work()
+    })
+  }
+
   async recordFailed(destinationId: string, error: string): Promise<void> {
     await this.unitOfWork
       .db()

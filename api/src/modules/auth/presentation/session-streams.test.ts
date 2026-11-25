@@ -72,4 +72,16 @@ describe('потоки под сессией', () => {
     await Bun.sleep(20)
     expect(live.ended()).toBe(true)
   })
+
+  test('место резервируется до работы перед потоком; поток не открыли — release возвращает место', () => {
+    const service = streams(async () => operator)
+    const slots = Array.from({ length: STREAMS_PER_OPERATOR.logs }, () => service.reserve(operator, 'logs'))
+    expect(() => service.reserve(operator, 'logs')).toThrow()
+
+    slots[0]?.release()
+    slots[0]?.release() // повторный release не освобождает чужое место
+    const next = service.reserve(operator, 'logs')
+    expect(() => service.reserve(operator, 'logs')).toThrow()
+    for (const slot of [...slots, next]) slot.release()
+  })
 })

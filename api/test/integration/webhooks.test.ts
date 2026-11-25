@@ -98,4 +98,52 @@ describe('вебхук назначения', () => {
     await new DestinationWebhooks(new PostgresDestinationWebhookRepository(unitOfWork), offline, noPublic, box).register(quiet, 'k')
     expect(offline.registered.size).toBe(0)
   })
+
+  test('две регистрации одного назначения (создание и проверка, две реплики) идут по очереди, разных — параллельно', async () => {
+    const notifications = new FakeDokployNotifications()
+    notifications.during = () => Bun.sleep(30)
+    const webhooks = new DestinationWebhooks(new PostgresDestinationWebhookRepository(unitOfWork), notifications, publicConfig, box)
+    const target = await destination()
+
+    await Promise.all([webhooks.register(target, 'k'), webhooks.register(target, 'k')])
+    expect(notifications.maxConcurrent).toBe(1)
+
+    notifications.maxConcurrent = 0
+    const other = await destination()
+    await Promise.all([webhooks.register(target, 'k'), webhooks.register(other, 'k')])
+    expect(notifications.maxConcurrent).toBe(2)
+  })
+
+  test('назначение переехало — новый секрет: уведомление, оставшееся в прежнем Dokploy, больше не принимается', async () => {
+    const notifications = new FakeDokployNotifications()
+    const webhooks = new DestinationWebhooks(new PostgresDestinationWebhookRepository(unitOfWork), notifications, publicConfig, box)
+    const target = await destination()
+    await webhooks.register(target, 'k')
+    const old = notifications.registered.get(`botyard-${target.id}`)?.headers['x-botyard-token'] ?? ''
+
+    // Новый Dokploy не принял регистрацию — секрет всё равно сменён
+    notifications.fail = true
+    await webhooks.register(target, 'k', { rotateSecret: true })
+    expect(await webhooks.verify(target.id, old)).toBe(false)
+
+    notifications.fail = false
+    await webhooks.register(target, 'k')
+    const fresh = notifications.registered.get(`botyard-${target.id}`)?.headers['x-botyard-token'] ?? ''
+    expect(fresh).not.toBe(old)
+    expect(await webhooks.verify(target.id, fresh)).toBe(true)
+  })
+
+  test('ключ не расшифровался — это тоже неудача регистрации, а не ошибка сценария', async () => {
+    const notifications = new FakeDokployNotifications()
+    const webhooks = new DestinationWebhooks(new PostgresDestinationWebhookRepository(unitOfWork), notifications, publicConfig, box)
+    const target = await destination()
+    await webhooks.register(target, 'k')
+
+    await webhooks.register(target, async () => {
+      throw new Error('kms unavailable')
+    })
+
+    const row = await db.selectFrom('destination_webhook').select('error').where('destination_id', '=', target.id).executeTakeFirstOrThrow()
+    expect(row.error).toBe('kms unavailable')
+  })
 })

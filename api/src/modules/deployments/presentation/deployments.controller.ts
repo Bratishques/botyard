@@ -29,7 +29,7 @@ import { IDEMPOTENCY_KEY, Idempotency, IdempotencyConflictError, IdempotencyErro
 import type { Operator } from '../../auth/domain/auth'
 import { CurrentOperator } from '../../auth/presentation/session.guard'
 import { SessionStreams } from '../../auth/presentation/session-streams'
-import { DeploymentLogs, LOGS, type LogLine, linesAfter, sinceSecondsFor } from '../application/deployment-logs'
+import { DeploymentLogs, hasGap, LOGS, type LogLine, linesAfter, sinceSecondsFor } from '../application/deployment-logs'
 import { DeploymentUseCases } from '../application/deployment-use-cases'
 import { type Deployment, DeploymentError, DeploymentErrorCode, type Operation, type OperationKind } from '../domain/deployment'
 
@@ -164,8 +164,17 @@ export class DeploymentsController {
     @Req() request: Request,
     @Res() response: Response,
   ): Promise<void> {
-    const initial = await http(this.logReader.read(id, { tail: LOGS.defaultTail }))
-    const stream = this.streams.start(request, response, operator, 'logs')
+    // Место — до чтения из Dokploy: лишний запрос получает 429 без работы
+    const slot = this.streams.reserve(operator, 'logs')
+    let polledAt = Date.now()
+    let initial: LogLine[]
+    try {
+      initial = await http(this.logReader.read(id, { tail: LOGS.defaultTail }))
+    } catch (error) {
+      slot.release()
+      throw error
+    }
+    const stream = slot.open(request, response)
     let { fresh, cursor } = linesAfter(initial, null)
     for (const line of fresh) stream.send('log', line)
 
@@ -176,9 +185,12 @@ export class DeploymentsController {
     while (!stopped) {
       await Bun.sleep(LOG_POLL_MS)
       if (stopped) break
+      const started = Date.now()
       try {
-        const sinceSeconds = sinceSecondsFor(cursor)
+        const sinceSeconds = sinceSecondsFor(polledAt, started)
         const read = await this.logReader.read(id, { tail: LOGS.maxTail, ...(sinceSeconds !== undefined && { sinceSeconds }) })
+        polledAt = started
+        if (hasGap(read, cursor, LOGS.maxTail)) stream.send('logs-gap', {})
         ;({ fresh, cursor } = linesAfter(read, cursor))
         for (const line of fresh) stream.send('log', line)
       } catch (error) {

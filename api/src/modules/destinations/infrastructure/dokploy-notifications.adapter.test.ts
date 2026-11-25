@@ -37,4 +37,22 @@ describe('уведомление Dokploy', () => {
     expect(calls.find((call) => call.method === 'notification.updateCustom')?.body).toMatchObject({ notificationId: 'n1', customId: 'c1' })
     expect(calls.some((call) => call.method === 'notification.createCustom')).toBe(false)
   })
+
+  test('какое из дублей оставить — не зависит от порядка ответа Dokploy: две чистки оставят одно и то же', async () => {
+    const name = 'botyard-dest'
+    const n1 = { notificationId: 'n1', name, notificationType: 'custom', customId: 'c1' }
+    const n2 = { notificationId: 'n2', name, notificationType: 'custom', customId: 'c2' }
+    const kept = async (list: (typeof n1)[]) => {
+      const { client, calls } = dokploy(list)
+      const id = await new DokployNotificationsAdapter(client).upsertCustom('https://d.example.com', 'k', {
+        name,
+        endpoint: 'https://botyard.example.com/webhooks/dokploy/x',
+        headers: {},
+      })
+      return { id, removed: calls.filter((call) => call.method === 'notification.remove').map((call) => call.body) }
+    }
+
+    expect(await kept([n2, n1])).toEqual({ id: 'n1', removed: [{ notificationId: 'n2' }] })
+    expect(await kept([n1, n2])).toEqual({ id: 'n1', removed: [{ notificationId: 'n2' }] })
+  })
 })

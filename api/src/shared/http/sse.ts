@@ -32,8 +32,12 @@ export function openSse(request: Request, response: Response): SseStream {
   const write = (chunk: string) => {
     if (closed) return
     response.write(chunk)
-    // Клиент не читает (зависшая вкладка, медленная сеть): буфер ответа растёт без предела
-    if ((response.writableLength ?? 0) > SSE_MAX_BUFFERED_BYTES) finish()
+    // Клиент не читает (зависшая вкладка, медленная сеть): буфер ответа растёт без предела. Рвать сокет, а не
+    // `end()`: FIN встал бы в очередь за буфером, который не уйдёт, и соединение с мегабайтом висело бы без срока
+    if ((response.writableLength ?? 0) > SSE_MAX_BUFFERED_BYTES) {
+      finish()
+      response.destroy()
+    }
   }
   const heartbeat = setInterval(() => write(': ping\n\n'), HEARTBEAT_MS)
   const finish = () => {

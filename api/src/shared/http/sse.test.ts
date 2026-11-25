@@ -8,6 +8,7 @@ function fakes(options: { destroyed: boolean }) {
   const request = Object.assign(new EventEmitter(), { destroyed: options.destroyed })
   const written: string[] = []
   let ended = false
+  let destroyed = false
   const response = Object.assign(new EventEmitter(), {
     writableEnded: false,
     destroyed: false,
@@ -19,8 +20,17 @@ function fakes(options: { destroyed: boolean }) {
     end: () => {
       ended = true
     },
+    destroy: () => {
+      destroyed = true
+    },
   })
-  return { request: request as unknown as Request, response: response as unknown as Response, written, ended: () => ended }
+  return {
+    request: request as unknown as Request,
+    response: response as unknown as Response,
+    written,
+    ended: () => ended,
+    destroyed: () => destroyed,
+  }
 }
 
 describe('SSE', () => {
@@ -50,7 +60,7 @@ describe('SSE', () => {
   })
 
   test('клиент не читает и буфер перерос предел — поток закрывается, а не копит память', () => {
-    const { request, response, ended } = fakes({ destroyed: false })
+    const { request, response, ended, destroyed } = fakes({ destroyed: false })
     const stream = openSse(request, response)
 
     stream.send('log', { text: 'ok' })
@@ -59,5 +69,7 @@ describe('SSE', () => {
     stream.send('log', { text: 'one more' })
 
     expect(ended()).toBe(true)
+    // Сокет рвётся: FIN за непереданным буфером не ушёл бы никогда
+    expect(destroyed()).toBe(true)
   })
 })

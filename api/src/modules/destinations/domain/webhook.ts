@@ -25,6 +25,13 @@ export interface DestinationWebhookRepository {
    */
   recordRegistered(destinationId: string, baseUrl: string, notificationId: string, endpoint: string): Promise<boolean>
   recordFailed(destinationId: string, error: string): Promise<void>
+  /** Новый секрет (назначение переехало): уведомление прежнего Dokploy с old-секретом получает 401 */
+  rotate(destinationId: string, secretSealed: Uint8Array): Promise<void>
+  /**
+   * Выполнить регистрацию одного назначения под блокировкой: create и check, две реплики — по очереди. Иначе обе
+   * видят пустой список уведомлений и создают два, или чистят дубли по-разному и удаляют оба
+   */
+  serialized<T>(destinationId: string, work: () => Promise<T>): Promise<T>
 }
 
 export const DESTINATION_WEBHOOK_REPOSITORY = Symbol('DESTINATION_WEBHOOK_REPOSITORY')

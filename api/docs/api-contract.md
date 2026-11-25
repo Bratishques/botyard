@@ -149,7 +149,7 @@ attempt, error, requestedBy, createdAt, finishedAt }`; `step` — текущий
 | Метод | Путь | Ответ |
 |---|---|---|
 | GET | `/deployments/:id/logs?tail=` | `200 { lines: [{ at, text }] }` — хвост логов контейнера робота (по умолчанию 200, не больше 1000), по времени, токен вычищен; удалённое развёртывание — `404` |
-| GET | `/deployments/:id/logs/stream` | SSE: `log` — `{ at, text }`, сначала хвост, затем новые строки раз в 3 с без повторов; `logs-error` — `{ code }` при сбое (`DEPLOYMENT_NOT_FOUND` — поток закрывается) |
+| GET | `/deployments/:id/logs/stream` | SSE: `log` — `{ at, text }`, сначала хвост, затем новые строки раз в 3 с без повторов; `logs-gap` — `{}`, робот печатал быстрее, часть строк пропущена; `logs-error` — `{ code }` при сбое (`DEPLOYMENT_NOT_FOUND` — поток закрывается) |
 | GET | `/events/deployments` | SSE: `deployment` — `{ deploymentId }`, сигнал перечитать развёртывание через API; `resync` — `{}`, события могли потеряться: перечитать список |
 
 SSE требуют сессии, как и прочие ручки; пульс — комментарий раз в 25 с. Сессия перепроверяется раз в 30 с: после
@@ -194,6 +194,6 @@ SSE требуют сессии, как и прочие ручки; пульс �
 - 2026-11-24 — `Idempotency-Key` помнится не меньше суток.
 - 2026-11-25 — вебхуки Dokploy: `POST /webhooks/dokploy/:destinationId`, `WEBHOOK_UNAUTHORIZED`.
 - 2026-11-25 — SSE: событие ошибки логов — `logs-error` (было `error`, совпадало со встроенным событием
-  `EventSource`), `resync` в `/events/deployments`, `429 TOO_MANY_STREAMS`; логи удалённого развёртывания — `404`.
+  `EventSource`), `logs-gap`, `resync` в `/events/deployments`, `429 TOO_MANY_STREAMS`; логи удалённого развёртывания — `404`.
 - 2026-11-25 — `drift` и `driftCheckedAt` в развёртывании.
 - 2026-11-25 — логи робота (`/deployments/:id/logs`, `/logs/stream`) и живой статус (`/events/deployments`) по SSE.

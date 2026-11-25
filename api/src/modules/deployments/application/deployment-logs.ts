@@ -84,13 +84,24 @@ export function linesAfter(lines: readonly LogLine[], cursor: LogCursor | null):
   return { fresh, cursor: at === undefined ? null : { at, texts } }
 }
 
-/** Сколько секунд назад была строка — окно `since` для следующего опроса, с запасом на часы Docker и задержку */
-export function sinceSecondsFor(cursor: LogCursor | null, now = Date.now()): number | undefined {
-  if (!cursor) return undefined
-  const at = Date.parse(cursor.at)
-  if (Number.isNaN(at)) return undefined
+/**
+ * Окно `since` следующего опроса: секунды с начала прошлого успешного опроса плюс запас. Только по часам api —
+ * не от времени строки по часам Docker: расхождение часов хоста и задержка запроса тогда сдвигали бы окно и
+ * теряли строки. Повторы из запаса отсекает курсор (`linesAfter`)
+ */
+export function sinceSecondsFor(previousPollStartedAt: number | null, now = Date.now()): number | undefined {
+  if (previousPollStartedAt === null) return undefined
 
-  return Math.max(1, Math.ceil((now - at) / 1000) + LOG_WINDOW_MARGIN_S)
+  return Math.max(1, Math.ceil((now - previousPollStartedAt) / 1000) + LOG_WINDOW_MARGIN_S)
+}
+
+/**
+ * Окно опроса упёрлось в предел строк и не дотянулось до курсора — между отданным и новым могли пропасть строки
+ * (робот печатает больше `maxTail` строк за опрос)
+ */
+export function hasGap(lines: readonly LogLine[], cursor: LogCursor | null, limit: number): boolean {
+  const [first] = lines
+  return cursor !== null && first !== undefined && lines.length >= limit && first.at > cursor.at
 }
 
 const LOG_WINDOW_MARGIN_S = 5
