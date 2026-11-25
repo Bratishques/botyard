@@ -14,6 +14,8 @@ const deployment = (patch: Partial<DeploymentView>): DeploymentView => ({
   status: 'RUNNING',
   activeOperationId: null,
   lastError: null,
+  drift: null,
+  driftCheckedAt: null,
   version: 1,
   createdAt: '',
   updatedAt: '',

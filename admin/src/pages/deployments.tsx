@@ -44,7 +44,10 @@ export function DeploymentsPage() {
                 <Badge value={d.tradingMode} />
               </Td>
               <Td>
-                <Badge value={d.status} />
+                <span className="flex flex-wrap gap-1">
+                  <Badge value={d.status} />
+                  {d.drift && <Badge value={d.drift} />}
+                </span>
                 {isBusy(d) && <span className="ml-1 text-xs text-sky-700">идёт операция…</span>}
               </Td>
               <Td className="text-xs">{formatTime(d.updatedAt)}</Td>

@@ -61,8 +61,8 @@ export interface LogLine {
 }
 
 /**
- * `GET /deployments/:id/logs`; живые логи — SSE `GET /deployments/:id/logs/stream`: события `log` с `LogLine` и
- * `logs-error` с `{ code }`
+ * `GET /deployments/:id/logs`; живые логи — SSE `GET /deployments/:id/logs/stream`: события `log` с `LogLine`,
+ * `logs-gap` (часть строк пропущена — робот печатал быстрее опроса) и `logs-error` с `{ code }`
  */
 export interface DeploymentLogsView {
   lines: LogLine[]

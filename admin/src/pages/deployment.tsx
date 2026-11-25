@@ -2,12 +2,12 @@
  * Карточка развёртывания: статус, текущая операция, история операций и действия start/stop/redeploy/delete.
  *
  * - Статус — только подтверждённый сервером: после действия карточка перечитывается, а пока идёт операция —
- *   опрашивается (`api/live.ts`, шов для SSE).
+ *   обновляется по событиям SSE, с опросом как запасным путём (`api/live.ts`).
  * - Каждое действие — диалог подтверждения: открытие диалога начинает попытку (свой `Idempotency-Key`) и фиксирует
  *   `version`, которую видел оператор. Повтор в том же диалоге уходит с тем же ключом и телом.
  * - Доступность кнопок — подсказка по правилам API (из каких статусов что можно); решает всё равно сервер.
  */
-import { type DeploymentAction, type DeploymentDetailsView, type DeploymentStatus } from '@botyard/contract'
+import type { DeploymentAction, DeploymentDetailsView, DeploymentDrift, DeploymentStatus } from '@botyard/contract'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { useState } from 'react'
@@ -17,7 +17,16 @@ import { api } from '../api/index'
 import { isBusy } from '../api/live'
 import { deploymentQuery, queryKeys } from '../api/queries'
 import { Badge, Button, Dialog, ErrorBox, Fact, Facts, formatTime, Loading, PageHeader, Table, Td } from '../ui/kit'
+import { DeploymentLogs } from './deployment-logs'
 import { useNames } from './deployments'
+
+/** Дрейф — наблюдение сверки, а не статус: сам Botyard его не исправляет, решает оператор (api/docs/architecture.md) */
+const DRIFT_HINTS: Record<DeploymentDrift, string> = {
+  APP_MISSING: 'приложения нет в Dokploy — пересоздать или удалить',
+  STOPPED_IN_DOKPLOY: 'остановлен в Dokploy вручную — запустить или остановить здесь',
+  RUNNING_IN_DOKPLOY: 'запущен в Dokploy, хотя здесь остановлен',
+  FAILED_IN_DOKPLOY: 'последняя сборка в Dokploy упала',
+}
 
 const ACTIONS: readonly DeploymentAction[] = ['start', 'stop', 'redeploy', 'delete']
 
@@ -71,7 +80,7 @@ export function DeploymentPage({ id }: { id: string }) {
           <Fact label="Статус">
             <span className="flex items-center gap-2">
               <Badge value={d.status} />
-              {busy && <span className="text-xs text-sky-700">обновляется каждые несколько секунд…</span>}
+              {busy && <span className="text-xs text-sky-700">операция идёт, статус обновляется сам…</span>}
             </span>
           </Fact>
           <Fact label="Режим торговли">
@@ -86,6 +95,16 @@ export function DeploymentPage({ id }: { id: string }) {
           </Fact>
           <Fact label="Версия шаблона">
             <span className="font-mono text-xs">{d.templateVersion}</span>
+          </Fact>
+          <Fact label="Расхождение с Dokploy">
+            {d.drift ? (
+              <span className="flex items-center gap-2">
+                <Badge value={d.drift} />
+                <span className="text-xs text-slate-500">{DRIFT_HINTS[d.drift]}</span>
+              </span>
+            ) : (
+              '—'
+            )}
           </Fact>
           <Fact label="Последняя ошибка">{d.lastError ?? '—'}</Fact>
           <Fact label="Создано">{formatTime(d.createdAt)}</Fact>
@@ -108,6 +127,8 @@ export function DeploymentPage({ id }: { id: string }) {
         <h2 className="mb-2 font-semibold">Операции</h2>
         <Operations deployment={d} />
       </section>
+
+      <DeploymentLogs deploymentId={d.id} />
 
       <section>
         <h2 className="mb-2 font-semibold">Конфиг</h2>

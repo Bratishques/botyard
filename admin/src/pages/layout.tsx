@@ -1,6 +1,8 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, Outlet, useNavigate } from '@tanstack/react-router'
+import { useEffect } from 'react'
 import { api } from '../api/index'
+import { connectDeploymentEvents } from '../api/live'
 import { meQuery } from '../api/queries'
 
 const nav = [
@@ -14,6 +16,8 @@ export function Layout() {
   const me = useQuery(meQuery)
   const queryClient = useQueryClient()
   const navigate = useNavigate()
+  // Один поток событий на вкладку, пока оператор внутри админки; выход размонтирует макет и закроет поток
+  useEffect(() => connectDeploymentEvents(queryClient), [queryClient])
   const logout = useMutation({
     mutationFn: api.auth.logout,
     // Выход отзывает сессию на сервере (204 всегда); кеш чистится, чтобы данные не пережили оператора

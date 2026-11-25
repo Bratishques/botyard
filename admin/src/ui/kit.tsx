@@ -118,6 +118,11 @@ const statusColors: Record<string, string> = {
   FAILED: 'bg-red-100 text-red-800',
   live: 'bg-red-100 text-red-800',
   sandbox: 'bg-slate-100 text-slate-700',
+  // Дрейф — расхождение с Dokploy: внимание оператора, но не авария
+  APP_MISSING: 'bg-amber-100 text-amber-800',
+  STOPPED_IN_DOKPLOY: 'bg-amber-100 text-amber-800',
+  RUNNING_IN_DOKPLOY: 'bg-amber-100 text-amber-800',
+  FAILED_IN_DOKPLOY: 'bg-amber-100 text-amber-800',
 }
 
 export function Badge({ value }: { value: string }) {
