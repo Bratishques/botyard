@@ -20,7 +20,8 @@ import { formSchema, parseSchema, toConfig, toFormValue } from '../schema-form/s
 import { Button, ErrorBox, Field, inputClass, Loading, PageHeader } from '../ui/kit'
 
 export function DeploymentNewPage() {
-  const attempt = useAttempt()
+  // Создание без `version`: попытка переживает перезагрузку, чтобы повтор после обрыва не создал второго робота
+  const attempt = useAttempt('deployment-create')
   const templates = useQuery(templatesQuery)
   const [templateId, setTemplateId] = useState('')
   const template = templates.data?.find((t) => t.id === templateId)

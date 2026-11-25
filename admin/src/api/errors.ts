@@ -66,6 +66,7 @@ const MESSAGES: Record<string, string> = {
 
   // развёртывания
   DEPLOYMENT_NOT_FOUND: 'Развёртывание не найдено.',
+  TOO_MANY_STREAMS: 'Открыто слишком много живых потоков (другие вкладки). Закройте лишние и повторите.',
   DEPLOYMENT_OPERATION_IN_PROGRESS: 'Идёт другая операция — дождитесь её окончания.',
   DEPLOYMENT_INVALID_STATE: 'В текущем статусе это действие недоступно. Данные обновлены.',
   DEPLOYMENT_VERSION_CONFLICT: 'Развёртывание успели изменить. Данные обновлены — откройте форму заново и проверьте.',
@@ -82,6 +83,11 @@ export function errorMessage(error: unknown): string {
   const text = MESSAGES[error.code] ?? `Ошибка ${error.status || 'сети'}.`
   const retry = error.retryAfter ? ` Повторить можно через ${error.retryAfter} с.` : ''
   return `${text}${retry} (${error.code})`
+}
+
+/** Текст по коду, пришедшему не в ответе API, а в событии потока (`logs-error`) */
+export function codeMessage(code: string): string {
+  return `${MESSAGES[code] ?? 'Ошибка потока.'} (${code})`
 }
 
 /**

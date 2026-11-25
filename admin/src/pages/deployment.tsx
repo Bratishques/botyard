@@ -191,6 +191,8 @@ function ActionDialog({
     },
   })
   const label = ACTION_LABELS[action]
+  // Конфликт версии или состояния, 404: версия в окне зафиксирована при открытии, повтор из него обречён
+  const stale = needsRefetch(run.error)
   return (
     <Dialog title={`${label.title}: ${deployment.appName}`} onClose={onClose} locked={run.isPending}>
       <form
@@ -205,16 +207,26 @@ function ActionDialog({
           <p className="text-sm font-medium text-red-700">Боевой режим: робот торгует реальными деньгами.</p>
         )}
         <ErrorBox error={run.error} />
-        {run.error !== null && (
+        {run.error !== null && !stale && (
           <p className="text-xs text-slate-500">
             Повтор из этого окна уйдёт с тем же ключом: если первый запрос прошёл, вторая операция не появится.
           </p>
         )}
+        {stale && (
+          <p className="text-xs text-slate-500">
+            Повтор с теми же данными получит тот же ответ. Закройте окно, проверьте обновлённую карточку и откройте действие заново.
+          </p>
+        )}
         <div className="flex justify-end gap-2">
-          <Button onClick={onClose}>Закрыть</Button>
-          <Button type="submit" variant={action === 'delete' ? 'danger' : 'primary'} disabled={run.isPending}>
-            {run.isPending ? 'Отправляем…' : run.error ? 'Повторить' : label.title}
+          {/* Пока запрос в пути, окно не закрыть: новое открытие начало бы новую попытку с новым ключом */}
+          <Button onClick={onClose} disabled={run.isPending}>
+            Закрыть
           </Button>
+          {!stale && (
+            <Button type="submit" variant={action === 'delete' ? 'danger' : 'primary'} disabled={run.isPending}>
+              {run.isPending ? 'Отправляем…' : run.error ? 'Повторить' : label.title}
+            </Button>
+          )}
         </div>
       </form>
     </Dialog>

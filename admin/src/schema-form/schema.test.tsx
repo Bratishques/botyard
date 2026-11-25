@@ -143,6 +143,45 @@ describe('форма по JSON Schema', () => {
     expect(toConfig(node, { ...filled, risk: { limit: '5', hard: false } })).toEqual({ risk: { limit: 5 }, tags: ['a'], dryRun: true })
   })
 
+  test('необязательный объект с default у детей без ввода в конфиг не попадает: оператор функцию не включал', () => {
+    const node = parseSchema({
+      type: 'object',
+      properties: {
+        stopLoss: {
+          type: 'object',
+          properties: {
+            percent: { type: 'number', default: 5 },
+            enabled: { type: 'boolean', default: true },
+            note: { type: 'string', default: 'x' },
+          },
+        },
+      },
+    })
+
+    expect(toConfig(node, toFormValue(node))).toEqual({})
+    // Оператор заполнил одно поле — объект уходит, прочие default подставит сервер
+    expect(toConfig(node, { stopLoss: { percent: '3', enabled: true, note: '' } })).toEqual({ stopLoss: { percent: 3, enabled: true } })
+    // Существующий конфиг развёртывания с объектом восстанавливается как есть
+    expect(toConfig(node, toFormValue(node, { stopLoss: { percent: 7 } }))).toEqual({ stopLoss: { percent: 7, enabled: true, note: 'x' } })
+  })
+
+  test('строка из пробелов — ввод и в обязательном поле, и в необязательном объекте; enum с объектным default выбирается', () => {
+    const node = parseSchema({
+      type: 'object',
+      properties: {
+        extra: { type: 'object', properties: { tag: { type: 'string' } } },
+        mode: { enum: [{ a: 1 }, { a: 2 }], default: { a: 2 } },
+      },
+    })
+    expect(toConfig(node, { ...(toFormValue(node) as object), extra: { tag: '  ' } })).toMatchObject({ extra: { tag: '  ' } })
+    expect((toFormValue(node) as Record<string, unknown>).mode).toBe('1')
+  })
+
+  test('имя свойства с точкой или скобкой — объект целиком полем JSON: путь формы его не разобрал бы', () => {
+    const node = parseSchema({ type: 'object', properties: { log: { type: 'object', properties: { 'log.level': { type: 'string' } } } } })
+    expect(node.kind === 'object' && node.properties[0]?.node.kind).toBe('unsupported')
+  })
+
   test('число — только десятичная запись', () => {
     const node = parseSchema({ type: 'object', properties: { n: { type: 'number' } } })
     expect(issues(node, { n: '0x1A' })).toEqual({ n: 'Нужно число' })

@@ -3,93 +3,91 @@
  *
  * Поток открывается по кнопке, а не сразу: на оператора сервер держит не больше трёх потоков логов, и открытая
  * карточка не должна занимать один из них без нужды. Токен клиента и ключ Dokploy сервер вычищает сам.
+ *
+ * Эффект зависит только от «включено» и id: фаза потока (подключается, идёт, закрыт) — отдельное состояние, её
+ * смена поток не пересоздаёт и не закрывает.
  */
 import type { LogLine } from '@botyard/contract'
 import { useEffect, useRef, useState } from 'react'
-import { LogBuffer } from '../api/live'
+import { codeMessage, errorMessage } from '../api/errors'
+import { api } from '../api/index'
+import { openLogStream } from '../api/live'
 import { Button } from '../ui/kit'
 
-type StreamState = { kind: 'off' } | { kind: 'connecting' } | { kind: 'live' } | { kind: 'closed'; reason: string }
+type Phase = { kind: 'connecting' } | { kind: 'live' } | { kind: 'closed'; reason: string }
 
-/** Код ошибки потока → текст для оператора */
-const ERRORS: Record<string, string> = {
-  DEPLOYMENT_NOT_FOUND: 'развёртывание удалено',
+const WARNINGS: Record<string, string> = {
   LOGS_UNAVAILABLE: 'Dokploy не отдал логи, следующая попытка через несколько секунд',
 }
 
 export function DeploymentLogs({ deploymentId }: { deploymentId: string }) {
-  const [state, setState] = useState<StreamState>({ kind: 'off' })
+  // Сеанс потока: `null` — выключен; новое значение — новый поток (в том числе «открыть снова» после закрытия)
+  const [session, setSession] = useState<number | null>(null)
+  const enabled = session !== null
+  const [phase, setPhase] = useState<Phase>({ kind: 'connecting' })
   const [lines, setLines] = useState<readonly LogLine[]>([])
   const [warning, setWarning] = useState<string | null>(null)
   const bottom = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
-    if (state.kind !== 'connecting') return
-    const buffer = new LogBuffer()
-    const source = new EventSource(`/api/deployments/${encodeURIComponent(deploymentId)}/logs/stream`)
-    source.onopen = () => setState({ kind: 'live' })
-    source.addEventListener('log', (event) => {
-      try {
-        if (buffer.push(JSON.parse(event.data) as LogLine)) setLines(buffer.all)
-        setWarning(null)
-      } catch {
-        // Битое событие — пропустить, поток живёт
+    if (session === null) return
+    setPhase({ kind: 'connecting' })
+    setLines([])
+    setWarning(null)
+    let active = true
+    const close = openLogStream(`/api/deployments/${encodeURIComponent(deploymentId)}/logs/stream`, (event) => {
+      if (!active) return
+      switch (event.kind) {
+        case 'open':
+          setPhase({ kind: 'live' })
+          return
+        case 'lines':
+          setLines(event.lines)
+          setWarning(null)
+          return
+        case 'warning':
+          setWarning(WARNINGS[event.code] ?? event.code)
+          return
+        case 'closed':
+          if (event.code) {
+            setPhase({ kind: 'closed', reason: codeMessage(event.code) })
+            return
+          }
+          // Ответ не 200 — EventSource его не показывает: узнать причину обычным запросом (401 сам уведёт на вход)
+          setPhase({ kind: 'closed', reason: 'поток закрыт' })
+          void api.deployments.logs(deploymentId, 1).then(
+            // Логи читаются — значит, поток отклонён пределом потоков
+            () => active && setPhase({ kind: 'closed', reason: codeMessage('TOO_MANY_STREAMS') }),
+            (error: unknown) => active && setPhase({ kind: 'closed', reason: errorMessage(error) }),
+          )
       }
     })
-    source.addEventListener('logs-gap', () => {
-      // Робот печатал быстрее опроса: пропуск видно прямо в ленте, на месте разрыва
-      if (buffer.mark('… часть строк пропущена: робот печатал быстрее, чем их успевали читать …')) setLines(buffer.all)
-    })
-    source.addEventListener('logs-error', (event) => {
-      let code = 'LOGS_UNAVAILABLE'
-      try {
-        code = (JSON.parse(event.data) as { code?: string }).code ?? code
-      } catch {}
-      if (code === 'DEPLOYMENT_NOT_FOUND') {
-        source.close()
-        setState({ kind: 'closed', reason: ERRORS[code] ?? code })
-      } else {
-        setWarning(ERRORS[code] ?? code)
-      }
-    })
-    source.onerror = () => {
-      // Обрыв сети браузер переподключает сам (повторы отсечёт буфер); закрытый поток — ответ не 200:
-      // сессия кончилась (401) или открыто слишком много потоков (429)
-      if (source.readyState === EventSource.CLOSED) {
-        setState({ kind: 'closed', reason: 'поток закрыт: сессия кончилась или открыто слишком много потоков логов' })
-      }
+    return () => {
+      active = false
+      close()
     }
-    return () => source.close()
-  }, [state.kind, deploymentId])
+  }, [session, deploymentId])
 
   useEffect(() => {
     if (lines.length > 0) bottom.current?.scrollIntoView({ block: 'nearest' })
   }, [lines])
 
-  const running = state.kind === 'connecting' || state.kind === 'live'
+  const running = enabled && phase.kind !== 'closed'
   return (
     <section>
-      <div className="mb-2 flex items-center gap-3">
+      <div className="mb-2 flex flex-wrap items-center gap-3">
         <h2 className="font-semibold">Логи</h2>
         {running ? (
-          <Button onClick={() => setState({ kind: 'off' })}>Остановить</Button>
+          <Button onClick={() => setSession(null)}>Остановить</Button>
         ) : (
-          <Button
-            onClick={() => {
-              setLines([])
-              setWarning(null)
-              setState({ kind: 'connecting' })
-            }}
-          >
-            {state.kind === 'off' ? 'Показать живые логи' : 'Открыть снова'}
-          </Button>
+          <Button onClick={() => setSession((previous) => (previous ?? 0) + 1)}>{enabled ? 'Открыть снова' : 'Показать живые логи'}</Button>
         )}
-        {state.kind === 'connecting' && <span className="text-xs text-slate-500">подключаемся…</span>}
-        {state.kind === 'live' && <span className="text-xs text-sky-700">новые строки каждые несколько секунд</span>}
-        {state.kind === 'closed' && <span className="text-xs text-red-700">{state.reason}</span>}
+        {enabled && phase.kind === 'connecting' && <span className="text-xs text-slate-500">подключаемся…</span>}
+        {enabled && phase.kind === 'live' && <span className="text-xs text-sky-700">новые строки каждые несколько секунд</span>}
+        {enabled && phase.kind === 'closed' && <span className="text-xs text-red-700">{phase.reason}</span>}
         {warning && running && <span className="text-xs text-amber-700">{warning}</span>}
       </div>
-      {state.kind !== 'off' && (
+      {enabled && (
         <div className="max-h-96 overflow-auto rounded border border-slate-200 bg-slate-950 p-3 font-mono text-xs text-slate-100">
           {lines.length === 0 ? (
             <span className="text-slate-400">строк пока нет — контейнер ещё не запущен или молчит</span>

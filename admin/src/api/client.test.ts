@@ -142,6 +142,35 @@ describe('Idempotency-Key на попытку пользователя', () => {
     expect(calls[3]?.headers['idempotency-key']).not.toBe(keys[0])
   })
 
+  test('попытка создания переживает перезагрузку страницы до подтверждённого успеха; хранилище недоступно — память', async () => {
+    const saved = new Map<string, string>()
+    const store = {
+      getItem: (k: string) => saved.get(k) ?? null,
+      setItem: (k: string, v: string) => void saved.set(k, v),
+      removeItem: (k: string) => void saved.delete(k),
+    }
+    const persist = { name: 'botyard:attempt:deployment-create', store }
+
+    const before = new Attempt(persist)
+    await before.run(async () => Promise.reject(new Error('network'))).catch(() => undefined)
+    // «Перезагрузка»: новая попытка с тем же хранилищем — тот же ключ
+    const reloaded = new Attempt(persist)
+    expect(reloaded.key).toBe(before.key)
+    await reloaded.run(async () => 'ok')
+    expect(new Attempt(persist).key).not.toBe(before.key)
+
+    const broken = {
+      getItem: () => {
+        throw new Error('denied')
+      },
+      setItem: () => {
+        throw new Error('denied')
+      },
+      removeItem: () => undefined,
+    }
+    expect(new Attempt({ name: 'x', store: broken }).key).toMatch(/^[0-9a-f-]{36}$/)
+  })
+
   test('разные попытки (два открытия формы) — разные ключи', () => {
     expect(new Attempt().key).not.toBe(new Attempt().key)
   })

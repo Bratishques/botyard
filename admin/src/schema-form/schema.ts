@@ -68,6 +68,9 @@ export function parseSchema(schema: unknown): SchemaNode {
   switch (type) {
     case 'object': {
       if (!isRecord(schema.properties)) return { ...common, kind: 'unsupported' }
+      // Путь поля в react-hook-form — через точку и скобки: имя `log.level` разъехалось бы по вложенным объектам и
+      // ввод потерялся бы. Такой объект целиком редактируется как JSON
+      if (Object.keys(schema.properties).some((name) => /[.[\]]/.test(name))) return { ...common, kind: 'unsupported' }
       const required = new Set(Array.isArray(schema.required) ? schema.required.filter((r) => typeof r === 'string') : [])
       // Порядок ключей схема не сохраняет: API хранит её в jsonb, а он переупорядочивает ключи. Поэтому порядок
       // полей задаёт форма: сначала обязательные, внутри групп — как пришли
@@ -106,6 +109,11 @@ export function parseSchema(schema: unknown): SchemaNode {
 export function toFormValue(node: SchemaNode, value: unknown = node.default, required = true): FormValue {
   switch (node.kind) {
     case 'object': {
+      // Необязательный объект без значения и без своего default — пустой: default детей не подставляется. Иначе
+      // заполненные детьми поля сделали бы объект «введённым», и он ушёл бы в конфиг без участия оператора — а для
+      // робота наличие блока часто значит «функция включена» (стоп-лосс). Сервер сам подставит default детей, если
+      // оператор объект заполнит
+      if (!required && !isRecord(value)) return emptyFormValue(node)
       // default объекта задаёт значения детей, но собственный default ребёнка — запасной вариант
       const source = isRecord(value) ? value : {}
       return Object.fromEntries(
@@ -126,7 +134,7 @@ export function toFormValue(node: SchemaNode, value: unknown = node.default, req
     case 'boolean':
       return typeof value === 'boolean' ? value : false
     case 'enum': {
-      const index = node.options.findIndex((option) => Object.is(option, value))
+      const index = node.options.findIndex((option) => sameValue(option, value))
       return index >= 0 ? String(index) : ''
     }
     case 'unsupported':
@@ -149,9 +157,33 @@ export function isBlank(node: SchemaNode, value: unknown): boolean {
       return !Array.isArray(value) || value.every((item) => isBlank(node.items, isRecord(item) ? item.value : undefined))
     case 'boolean':
       return value === undefined || value === (node.default === true)
+    // Пустая строка — только пустая: строка из пробелов — ввод, как и в `toConfig`
+    case 'string':
+      return typeof value !== 'string' || value === ''
     default:
       return typeof value !== 'string' || value.trim() === ''
   }
+}
+
+/** Значение формы без ввода и без default — для необязательного объекта, которого оператор не трогал */
+function emptyFormValue(node: SchemaNode): FormValue {
+  switch (node.kind) {
+    case 'object':
+      return Object.fromEntries(node.properties.map((p) => [p.name, emptyFormValue(p.node)]))
+    case 'array':
+      return []
+    case 'boolean':
+      // Положение по умолчанию — «не тронут» для `isBlank`
+      return node.default === true
+    default:
+      return ''
+  }
+}
+
+/** Равенство значений схемы: enum и const бывают объектами и массивами */
+function sameValue(a: unknown, b: unknown): boolean {
+  if (Object.is(a, b)) return true
+  return typeof a === 'object' && a !== null && typeof b === 'object' && b !== null && JSON.stringify(a) === JSON.stringify(b)
 }
 
 /**

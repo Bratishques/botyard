@@ -14,6 +14,7 @@ import type {
   DeploymentAction,
   DeploymentCreateBody,
   DeploymentDetailsView,
+  DeploymentLogsView,
   DeploymentView,
   DestinationPreviewBody,
   DestinationPreviewView,
@@ -38,6 +39,8 @@ export function endpoints(api: ApiClient) {
     auth: {
       // 401 здесь — штатный ответ «не вошёл»: его разбирает проверка маршрута, а не общий переход на вход
       me: () => api.get<OperatorView>('/auth/me', { skipAuthRedirect: true }),
+      // Жива ли сессия — с общим переходом на вход при 401 (поток SSE статуса ответа не видит)
+      check: () => api.get<OperatorView>('/auth/me'),
       login: (body: LoginBody) => api.post<OperatorView>('/auth/login', body, { skipAuthRedirect: true }),
       logout: () => api.post<void>('/auth/logout', {}, { skipAuthRedirect: true }),
     },
@@ -67,6 +70,7 @@ export function endpoints(api: ApiClient) {
       archive: (customerId: string, body: VersionBody) => api.post<CustomerView>(`/customers/${id(customerId)}/archive`, body),
     },
     deployments: {
+      logs: (deploymentId: string, tail: number) => api.get<DeploymentLogsView>(`/deployments/${id(deploymentId)}/logs?tail=${tail}`),
       list: () => api.get<DeploymentView[]>('/deployments'),
       get: (deploymentId: string) => api.get<DeploymentDetailsView>(`/deployments/${id(deploymentId)}`),
       create: (body: DeploymentCreateBody, idempotencyKey: string) =>

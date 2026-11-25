@@ -50,6 +50,7 @@ export type EventSourceFactory = (url: string) => EventSourceLike
 const EVENT_SOURCE_CLOSED = 2
 /** Пауза перед новым потоком, если браузер сам переподключаться не стал (не-200: 401, 429) */
 export const EVENTS_RETRY_MS = 5_000
+export const EVENTS_MAX_RETRY_MS = 60_000
 
 /**
  * Подписка на поток событий развёртываний с инвалидацией запросов. Возвращает отключение.
@@ -58,22 +59,36 @@ export const EVENTS_RETRY_MS = 5_000
  */
 export function connectDeploymentEvents(
   cache: Invalidator,
-  open: EventSourceFactory = (url) => new EventSource(url),
-  url = '/api/events/deployments',
+  options: {
+    open?: EventSourceFactory
+    url?: string
+    /**
+     * Перед новым потоком после закрытого: жива ли сессия. `EventSource` не видит статуса ответа, и без проверки
+     * вкладка после выхода в другой бесконечно ловила бы 401 и показывала данные прежнего оператора. Проверка идёт
+     * обычным запросом — его 401 сам переводит на вход
+     */
+    sessionAlive?: () => Promise<boolean>
+    retryMs?: number
+  } = {},
 ): () => void {
+  const open = options.open ?? ((url: string) => new EventSource(url))
+  const url = options.url ?? '/api/events/deployments'
+  const sessionAlive = options.sessionAlive ?? (async () => true)
+  const baseRetryMs = options.retryMs ?? EVENTS_RETRY_MS
   let source: EventSourceLike | null = null
   let retry: ReturnType<typeof setTimeout> | null = null
   let stopped = false
-  let connectedBefore = false
+  let failures = 0
   const all = () => void cache.invalidateQueries({ queryKey: ['deployments'] })
 
   const connect = () => {
     const current = open(url)
     source = current
     current.onopen = () => {
-      // Переподключение: события за разрыв потеряны
-      if (connectedBefore) all()
-      connectedBefore = true
+      // Каждое открытие, и первое тоже: события до подписки или за разрыв потеряны, а без активной операции их
+      // не подберёт и опрос
+      failures = 0
+      all()
     }
     current.addEventListener('deployment', (event) => {
       const data = parseEvent<DeploymentChangedEvent>(event)
@@ -84,13 +99,26 @@ export function connectDeploymentEvents(
     })
     current.addEventListener('resync', all)
     current.onerror = () => {
-      // Обрыв сети браузер переподключает сам; закрытый поток (ответ не 200) — нет: новый через паузу
+      // Обрыв сети браузер переподключает сам; закрытый поток (ответ не 200) — нет: новый через растущую паузу,
+      // и только если сессия жива
       if (stopped || current.readyState !== EVENT_SOURCE_CLOSED || retry) return
       current.close()
-      retry = setTimeout(() => {
-        retry = null
-        if (!stopped) connect()
-      }, EVENTS_RETRY_MS)
+      failures++
+      retry = setTimeout(
+        () => {
+          void sessionAlive().then(
+            (alive) => {
+              retry = null
+              if (!stopped && alive) connect()
+            },
+            () => {
+              retry = null
+              if (!stopped) connect()
+            },
+          )
+        },
+        Math.min(baseRetryMs * 2 ** (failures - 1), EVENTS_MAX_RETRY_MS),
+      )
     }
   }
   connect()
@@ -144,3 +172,56 @@ export class LogBuffer {
     return true
   }
 }
+
+export type LogStreamEvent =
+  | { kind: 'open' }
+  | { kind: 'lines'; lines: readonly LogLine[] }
+  | { kind: 'warning'; code: string }
+  | { kind: 'closed'; code: string | null }
+
+/**
+ * Живой поток логов вне React: открыть, разобрать события, закрыть. Состояние потока (`open`, `closed`) — только в
+ * событиях наружу, сам поток живёт до `close()`. Повторы после переподключения отсекает `LogBuffer`, разрыв
+ * (`logs-gap`) ставит пометку в ленту. `closed` — поток кончился: `DEPLOYMENT_NOT_FOUND` или ответ не 200 (код
+ * тогда `null` — причину выясняет вызывающий)
+ */
+export function openLogStream(
+  url: string,
+  onEvent: (event: LogStreamEvent) => void,
+  open: EventSourceFactory = (u) => new EventSource(u),
+): () => void {
+  const buffer = new LogBuffer()
+  const source = open(url)
+  let closed = false
+  const finish = (code: string | null) => {
+    if (closed) return
+    closed = true
+    source.close()
+    onEvent({ kind: 'closed', code })
+  }
+  source.onopen = () => onEvent({ kind: 'open' })
+  source.addEventListener('log', (event) => {
+    const line = parseEvent<LogLine>(event)
+    if (line && typeof line.at === 'string' && typeof line.text === 'string' && buffer.push(line)) {
+      onEvent({ kind: 'lines', lines: buffer.all })
+    }
+  })
+  source.addEventListener('logs-gap', () => {
+    if (buffer.mark(LOG_GAP_TEXT)) onEvent({ kind: 'lines', lines: buffer.all })
+  })
+  source.addEventListener('logs-error', (event) => {
+    const code = parseEvent<{ code?: string }>(event)?.code ?? 'LOGS_UNAVAILABLE'
+    if (code === 'DEPLOYMENT_NOT_FOUND') finish(code)
+    else onEvent({ kind: 'warning', code })
+  })
+  source.onerror = () => {
+    if (source.readyState === EVENT_SOURCE_CLOSED) finish(null)
+  }
+
+  return () => {
+    closed = true
+    source.close()
+  }
+}
+
+export const LOG_GAP_TEXT = '… часть строк пропущена: робот печатал быстрее, чем их успевали читать …'

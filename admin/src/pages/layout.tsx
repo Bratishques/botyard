@@ -1,6 +1,8 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, Outlet, useNavigate } from '@tanstack/react-router'
 import { useEffect } from 'react'
+import { isApiError } from '../api/client'
+import { errorMessage } from '../api/errors'
 import { api } from '../api/index'
 import { connectDeploymentEvents } from '../api/live'
 import { meQuery } from '../api/queries'
@@ -17,11 +19,23 @@ export function Layout() {
   const queryClient = useQueryClient()
   const navigate = useNavigate()
   // Один поток событий на вкладку, пока оператор внутри админки; выход размонтирует макет и закроет поток
-  useEffect(() => connectDeploymentEvents(queryClient), [queryClient])
+  useEffect(
+    () =>
+      connectDeploymentEvents(queryClient, {
+        // 401 здесь сам уводит на вход (общий обработчик клиента) — тогда и повторять незачем
+        sessionAlive: () =>
+          api.auth.check().then(
+            () => true,
+            (error: unknown) => !(isApiError(error) && error.status === 401),
+          ),
+      }),
+    [queryClient],
+  )
   const logout = useMutation({
     mutationFn: api.auth.logout,
-    // Выход отзывает сессию на сервере (204 всегда); кеш чистится, чтобы данные не пережили оператора
-    onSettled: () => {
+    // Выход отзывает сессию на сервере. Только подтверждённый: при обрыве или 5xx сессия могла остаться живой, и
+    // уйти на вход значило бы оставить её следующему человеку за этим компьютером
+    onSuccess: () => {
       queryClient.clear()
       void navigate({ to: '/login' })
     },
@@ -46,6 +60,7 @@ export function Layout() {
           </nav>
           <div className="ml-auto flex items-center gap-3 text-sm">
             <span className="text-slate-500">{me.data?.email}</span>
+            {logout.error && <span className="text-xs text-red-700">Выход не подтверждён — повторите. {errorMessage(logout.error)}</span>}
             <button type="button" className="text-sky-700 hover:underline" onClick={() => logout.mutate()} disabled={logout.isPending}>
               Выйти
             </button>
