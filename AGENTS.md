@@ -32,11 +32,11 @@ Botyard — платформа, которая разворачивает тор
 
 ## Монорепо
 
-Turborepo + workspaces Bun (`package.json`, `turbo.json` в корне). Пакеты: `api`, `packages/*` (сейчас
-`@botyard/contract`); админка войдёт на этапе 4.
+Turborepo + workspaces Bun (`package.json`, `turbo.json` в корне). Пакеты: `api`, `admin` (`@botyard/admin`),
+`packages/*` (сейчас `@botyard/contract`).
 - Зависимости — `bun install` в корне; общие версии — `workspaces.catalog`, в пакете — `"catalog:"`.
 - Проверка всего — `bun run check` в корне (lint, typecheck, test по графу, с кешем); интеграционные —
-  `bun run test:int` (без кеша). Внутри пакета его собственные скрипты работают как раньше.
+  `bun run test:int` (без кеша); сборка админки — `bun run build` (turbo, выход `admin/dist`). Внутри пакета его собственные скрипты работают как раньше.
 - Схемы тел запросов и формы ответов API живут в `@botyard/contract`, а не в контроллерах: контроллер берёт
   схему оттуда, функция ответа возвращает тип контракта — расхождение с доменом ловит `tsc`.
 - Biome: общий стиль — корневой `biome.json`, в пакете — `"extends": "//"` и свои `files.includes`.

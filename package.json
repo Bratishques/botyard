@@ -5,6 +5,7 @@
   "workspaces": {
     "packages": [
       "api",
+      "admin",
       "packages/*"
     ],
     "catalog": {
@@ -16,6 +17,8 @@
   },
   "scripts": {
     "check": "turbo run lint lint:root typecheck test",
+    "build": "turbo run build",
+    "dev": "turbo run dev",
     "test:int": "turbo run test:int",
     "test:contract": "turbo run test:contract",
     "format": "turbo run format && biome check --write package.json turbo.json biome.json",

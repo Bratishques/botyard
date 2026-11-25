@@ -1,6 +1,7 @@
 import {
   type DestinationCreateBody,
   type DestinationPreviewBody,
+  type DestinationPreviewView,
   type DestinationUpdateBody,
   type DestinationView,
   destinationCreateSchema,
@@ -102,7 +103,7 @@ export class DestinationsController {
   /** Окружения и серверы по адресу и ключу — до сохранения, чтобы оператор выбрал окружение */
   @Post('preview')
   @HttpCode(HttpStatus.OK)
-  preview(@Body(new ZodBody(destinationPreviewSchema)) body: DestinationPreviewBody) {
+  preview(@Body(new ZodBody(destinationPreviewSchema)) body: DestinationPreviewBody): Promise<DestinationPreviewView> {
     return http(this.destinations.preview(body.baseUrl, body.apiKey))
   }
 

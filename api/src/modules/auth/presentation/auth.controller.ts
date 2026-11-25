@@ -1,4 +1,4 @@
-import { type LoginBody, loginSchema } from '@botyard/contract'
+import { type LoginBody, loginSchema, type OperatorView } from '@botyard/contract'
 import {
   Body,
   Controller,
@@ -35,7 +35,7 @@ export class AuthController {
     @Body(new ZodBody(loginSchema)) body: LoginBody,
     @Req() request: Request,
     @Res({ passthrough: true }) response: Response,
-  ): Promise<Operator> {
+  ): Promise<OperatorView> {
     try {
       const { token, operator, expiresAt } = await this.auth.login(body.email, body.password, request.ip ?? 'unknown')
       response.cookie(SESSION_COOKIE, token, {
@@ -69,7 +69,7 @@ export class AuthController {
   }
 
   @Get('me')
-  me(@CurrentOperator() operator: Operator): Operator {
+  me(@CurrentOperator() operator: Operator): OperatorView {
     return operator
   }
 }

@@ -60,12 +60,25 @@ export interface LogLine {
   text: string
 }
 
-/** `GET /deployments/:id/logs`; живые логи — SSE `GET /deployments/:id/logs/stream`, события `log` с `LogLine` */
+/**
+ * `GET /deployments/:id/logs`; живые логи — SSE `GET /deployments/:id/logs/stream`: события `log` с `LogLine`,
+ * `logs-gap` (часть строк пропущена — робот печатал быстрее опроса) и `logs-error` с `{ code }`
+ */
 export interface DeploymentLogsView {
   lines: LogLine[]
 }
 
-/** SSE `GET /events/deployments`, событие `deployment`: перечитать это развёртывание через API */
+/** SSE `GET /events/deployments`, событие `deployment`: перечитать это развёртывание через API; `resync` — перечитать всё */
 export interface DeploymentChangedEvent {
   deploymentId: string
+}
+
+/** `GET /deployments/:id`: развёртывание с историей операций, новые — первыми */
+export interface DeploymentDetailsView extends DeploymentView {
+  operations: OperationView[]
+}
+
+/** Ответ на создание и действия: принятая операция, а не её результат — его выполняет воркер саги */
+export interface DeploymentAcceptedView extends DeploymentView {
+  operation: OperationView
 }

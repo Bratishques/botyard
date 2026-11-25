@@ -49,3 +49,10 @@ export interface DestinationView {
   createdAt: string
   updatedAt: string
 }
+
+/** Ответ `POST /destinations/preview`: что видит ключ в Dokploy — для выбора окружения до сохранения */
+export interface DestinationPreviewView {
+  baseUrl: string
+  environments: { projectId: string; environmentId: string; name: string }[]
+  servers: { serverId: string; name: string }[]
+}
